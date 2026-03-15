@@ -23,8 +23,13 @@
     customDateFrom: null,
     customDateTo: null,
     categoryFilter: 'all',
+    typeFilter: 'all',
+    watchedFilter: 'all',
     keywords: '',
     sortBy: 'dateDesc',
+
+    // Watched State Persistence
+    watchedVideos: new Set(JSON.parse(localStorage.getItem('yt_explorer_watched') || '[]')),
 
     // Category map from YouTube
     categoryMap: {},
@@ -58,8 +63,12 @@
     dateTo: $('#date-to'),
     btnApplyDate: $('#btn-apply-date'),
     categoryChips: $('#category-chips'),
+    typeChips: $('#type-chips'),
+    watchedChips: $('#watched-chips'),
     keywordInput: $('#keyword-input'),
     sortSelect: $('#sort-select'),
+
+    mobileNav: $('#mobile-nav'),
 
     activeFilters: $('#active-filters'),
     activeFilterTags: $('#active-filter-tags'),
@@ -115,6 +124,32 @@
     if (d < 30) return `${Math.floor(d / 7)} week${Math.floor(d / 7) > 1 ? 's' : ''} ago`;
     if (d < 365) return `${Math.floor(d / 30)} month${Math.floor(d / 30) > 1 ? 's' : ''} ago`;
     return `${Math.floor(d / 365)} year${Math.floor(d / 365) > 1 ? 's' : ''} ago`;
+  }
+
+  function isPodcast(title, channel, duration) {
+    // Basic heuristic: duration > 30m and specific words
+    const t = (title + ' ' + channel).toLowerCase();
+    const podcastKeywords = [
+      'podcast', 'pod', 'ep', 'episode', 'jre', 'flow', 'podpah', 
+      'inteligência', 'vênus', 'ticaracatica', 'huberman', 'fridman', 
+      'diary of a ceo', 'shawn ryan', 'joe rogan', 'megyn kelly'
+    ];
+    if (duration > 1800 && podcastKeywords.some(kw => t.includes(kw))) {
+      return true;
+    }
+    // Very long videos with multiple faces or "interview" are often podcasts but harder to detect.
+    // If it has 'podcast' in the title regardless of length:
+    if (t.includes('podcast')) return true;
+    return false;
+  }
+
+  function toggleWatched(videoId) {
+    if (state.watchedVideos.has(videoId)) {
+      state.watchedVideos.delete(videoId);
+    } else {
+      state.watchedVideos.add(videoId);
+    }
+    localStorage.setItem('yt_explorer_watched', JSON.stringify([...state.watchedVideos]));
   }
 
   function show(el) { el.classList.remove('hidden'); }
@@ -310,6 +345,8 @@
           const detail = videoDetails[vid];
           const catName = YT_CATEGORIES[detail.categoryId] || 'Other';
           state.detectedCategories.add(catName);
+          
+          const isPod = isPodcast(item.snippet.title, item.snippet.videoOwnerChannelTitle || '', detail.duration);
 
           return {
             id: vid,
@@ -320,8 +357,9 @@
             duration: detail.duration,
             durationFormatted: formatDuration(detail.duration),
             category: catName,
+            isPodcast: isPod,
             description: detail.description,
-            tags: detail.tags,
+            tags: detail.tags || [],
           };
         });
 
@@ -405,6 +443,19 @@
       videos = videos.filter((v) => v.category === state.categoryFilter);
     }
 
+    // Content Type (Podcast/Video)
+    if (state.typeFilter !== 'all') {
+      videos = videos.filter((v) => state.typeFilter === 'podcast' ? v.isPodcast : !v.isPodcast);
+    }
+
+    // Watched Status
+    if (state.watchedFilter !== 'all') {
+      videos = videos.filter((v) => {
+        const watched = state.watchedVideos.has(v.id);
+        return state.watchedFilter === 'watched' ? watched : !watched;
+      });
+    }
+
     // Keywords
     if (state.keywords.trim()) {
       const kws = state.keywords.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
@@ -452,13 +503,18 @@
   function renderVideos() {
     dom.videoGrid.innerHTML = '';
     state.filteredVideos.forEach((v, i) => {
+      const isWatched = state.watchedVideos.has(v.id);
       const card = document.createElement('div');
-      card.className = 'video-card';
+      card.className = 'video-card' + (isWatched ? ' watched' : '');
       card.style.animationDelay = `${Math.min(i, 8) * 0.05}s`;
       card.innerHTML = `
         <div class="video-thumb-wrapper">
           <img class="video-thumb" src="${v.thumbnail}" alt="${escHtml(v.title)}" loading="lazy" />
+          ${isWatched ? '<span class="watched-badge"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Watched</span>' : ''}
           <span class="video-duration-badge">${v.durationFormatted}</span>
+          <button class="btn-mark-watched ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
+            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
+          </button>
           <div class="video-play-overlay">
             <div class="play-btn-circle">
               <svg width="22" height="22" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -471,12 +527,29 @@
           <div class="video-meta-row">
             <span>${timeAgo(v.addedAt)}</span>
             <span class="video-category-badge">${escHtml(v.category)}</span>
+            ${v.isPodcast ? '<span class="video-category-badge" style="background:rgba(168,85,247,0.12);color:var(--purple);">Podcast</span>' : ''}
           </div>
         </div>
       `;
-      card.addEventListener('click', () => {
-        window.open(`https://www.youtube.com/watch?v=${v.id}`, '_blank');
+
+      // Video click handling
+      const playBtn = card.querySelector('.video-play-overlay');
+      const thumbWrap = card.querySelector('.video-thumb');
+      const title = card.querySelector('.video-title');
+      
+      const openVideo = () => window.open(`https://www.youtube.com/watch?v=${v.id}`, '_blank');
+      playBtn.addEventListener('click', openVideo);
+      thumbWrap.addEventListener('click', openVideo);
+      title.addEventListener('click', openVideo);
+
+      // Watched toggle logic
+      const watchBtn = card.querySelector('.btn-mark-watched');
+      watchBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleWatched(v.id);
+        applyFilters(); // Re-render to update badges & filters
       });
+
       dom.videoGrid.appendChild(card);
     });
   }
@@ -494,6 +567,8 @@
     state.customDateFrom = null;
     state.customDateTo = null;
     state.categoryFilter = 'all';
+    state.typeFilter = 'all';
+    state.watchedFilter = 'all';
     state.keywords = '';
     state.sortBy = 'dateDesc';
 
@@ -509,6 +584,8 @@
     setActiveChip(dom.durationChips, 'all');
     setActiveChip(dom.dateChips, 'all');
     setActiveChip(dom.categoryChips, 'all');
+    setActiveChip(dom.typeChips, 'all');
+    setActiveChip(dom.watchedChips, 'all');
   }
 
   function setActiveChip(container, value) {
@@ -530,6 +607,8 @@
       tags.push({ label, clear: () => { state.dateFilter = 'all'; state.customDateFrom = null; state.customDateTo = null; setActiveChip(dom.dateChips, 'all'); hide(dom.customDateRange); } });
     }
     if (state.categoryFilter !== 'all') tags.push({ label: `Category: ${state.categoryFilter}`, clear: () => { state.categoryFilter = 'all'; setActiveChip(dom.categoryChips, 'all'); } });
+    if (state.typeFilter !== 'all') tags.push({ label: `Type: ${state.typeFilter}`, clear: () => { state.typeFilter = 'all'; setActiveChip(dom.typeChips, 'all'); } });
+    if (state.watchedFilter !== 'all') tags.push({ label: `Status: ${state.watchedFilter}`, clear: () => { state.watchedFilter = 'all'; setActiveChip(dom.watchedChips, 'all'); } });
     if (state.keywords.trim()) tags.push({ label: `Keywords: ${state.keywords}`, clear: () => { state.keywords = ''; dom.keywordInput.value = ''; } });
 
     if (tags.length === 0) {
@@ -619,6 +698,24 @@
       applyFilters();
     });
 
+    // Content Type 
+    dom.typeChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      state.typeFilter = chip.dataset.type;
+      setActiveChip(dom.typeChips, chip.dataset.type);
+      applyFilters();
+    });
+
+    // Watched Status
+    dom.watchedChips.addEventListener('click', (e) => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      state.watchedFilter = chip.dataset.watched;
+      setActiveChip(dom.watchedChips, chip.dataset.watched);
+      applyFilters();
+    });
+
     // Keywords
     const debouncedKeywords = debounce(() => {
       state.keywords = dom.keywordInput.value;
@@ -642,6 +739,30 @@
     dom.btnLoadMore.addEventListener('click', () => {
       if (state.nextPageToken) {
         loadPlaylistVideos(state.nextPageToken);
+      }
+    });
+
+    // Mobile nav
+    dom.mobileNav.addEventListener('click', (e) => {
+      const btn = e.target.closest('.nav-btn');
+      if (!btn) return;
+
+      // Update active state
+      dom.mobileNav.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      const target = btn.dataset.target;
+      if (target === 'sidebar') {
+        dom.sidebar.classList.add('open');
+        window.scrollTo(0, 0);
+      } else if (target === 'search') {
+        dom.sidebar.classList.remove('open');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        setTimeout(() => dom.searchInput.focus(), 300);
+      } else if (target === 'filters') {
+        dom.sidebar.classList.remove('open');
+        const filterEl = document.getElementById('filter-bar');
+        if (filterEl) filterEl.scrollIntoView({ behavior: 'smooth' });
       }
     });
   }

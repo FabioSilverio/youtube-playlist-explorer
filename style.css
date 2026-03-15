@@ -686,7 +686,7 @@ body {
 .video-card:nth-child(7) { animation-delay: 0.3s; }
 .video-card:nth-child(8) { animation-delay: 0.35s; }
 
-/* ---------- RESPONSIVE ---------- */
+/* ---------- RESPONSIVE VARIABLES ---------- */
 @media (max-width: 1024px) {
   .sidebar { transform: translateX(-100%); }
   .sidebar.open { transform: translateX(0); box-shadow: var(--shadow-lg); }
@@ -701,5 +701,110 @@ body {
   .filter-section-sort { margin-left: 0; }
   .video-grid { grid-template-columns: 1fr; }
   .top-bar { padding: 0 12px; gap: 8px; }
-  .main-content { padding: 16px 12px 30px; }
+  /* Extra bottom padding to account for mobile nav */
+  .main-content { padding: 16px 12px 100px; }
+  .sidebar { padding-bottom: 80px; }
+}
+
+/* ---------- MOBILE BOTTOM NAV ---------- */
+.mobile-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 64px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--border);
+  z-index: 200;
+  padding: 0 16px;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (max-width: 640px) {
+  .mobile-nav { display: flex; align-items: center; justify-content: space-around; }
+}
+
+.nav-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 0.65rem;
+  font-weight: 600;
+  cursor: pointer;
+  height: 100%;
+  flex: 1;
+  transition: var(--transition-fast);
+}
+
+.nav-btn svg { transition: transform var(--transition-fast); }
+.nav-btn.active { color: var(--accent); }
+.nav-btn.active svg { transform: translateY(-2px); filter: drop-shadow(0 0 8px var(--accent-glow)); }
+
+/* ---------- WATCHED STATE ---------- */
+.video-card.watched .video-thumb-wrapper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.video-card.watched .video-title {
+  color: var(--text-muted);
+}
+
+.watched-badge {
+  position: absolute;
+  top: 8px; left: 8px;
+  background: rgba(46, 213, 115, 0.9);
+  color: #000;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 2;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-mark-watched {
+  position: absolute;
+  top: 8px; right: 8px;
+  background: rgba(0,0,0,0.7);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #fff;
+  border-radius: var(--radius-full);
+  padding: 6px;
+  cursor: pointer;
+  z-index: 3;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-card:hover .btn-mark-watched {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.btn-mark-watched:hover {
+  background: var(--blue);
+  border-color: var(--blue);
+}
+.btn-mark-watched.is-watched {
+  background: var(--green);
+  border-color: var(--green);
+  color: #000;
 }
