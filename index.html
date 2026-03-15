@@ -253,9 +253,32 @@
         <button id="btn-close-modal" class="btn-icon">✕</button>
       </div>
       <div class="modal-body">
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">Select a playlist:</p>
         <div id="modal-playlist-list" class="modal-playlist-list">
           <!-- Playlists injected here -->
         </div>
+        
+        <div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
+          <label for="playlist-modal-tags" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 8px;">Tags (optional, comma separated):</label>
+          <input type="text" id="playlist-modal-tags" class="search-input" placeholder="e.g. tutorial, react" style="width: 100%;" autocomplete="off" />
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Video Tag Modal -->
+  <div id="tag-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Edit Video Tags</h3>
+        <button id="btn-close-tag-modal" class="btn-icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 16px;">
+          Add comma-separated tags to this video (e.g., tutorial, react, music):
+        </p>
+        <input type="text" id="tag-input" class="search-input" placeholder="e.g. code, music" style="width: 100%; margin-bottom: 16px;" autocomplete="off" />
+        <button id="btn-save-tags" class="btn-small" style="width: 100%; justify-content: center; padding: 10px;">Save Tags</button>
       </div>
     </div>
   </div>

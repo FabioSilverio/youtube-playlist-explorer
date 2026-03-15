@@ -39,6 +39,9 @@
 
     // Followed Playlists
     followedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_followed') || '[]'),
+
+    // Custom Video Tags { "videoId": ["tag1", "tag2"] }
+    videoTags: JSON.parse(localStorage.getItem('yt_explorer_tags') || '{}'),
   };
 
   // ---- DOM refs ----
@@ -98,6 +101,7 @@
     
     playlistModal: $('#playlist-modal'),
     modalPlaylistList: $('#modal-playlist-list'),
+    playlistModalTags: $('#playlist-modal-tags'),
     btnCloseModal: $('#btn-close-modal'),
 
     btnFollowPlaylist: $('#btn-follow-playlist'),
@@ -105,6 +109,11 @@
     btnCloseFollowModal: $('#btn-close-follow-modal'),
     followInput: $('#follow-input'),
     btnAddFollow: $('#btn-add-follow'),
+
+    tagModal: $('#tag-modal'),
+    btnCloseTagModal: $('#btn-close-tag-modal'),
+    tagInput: $('#tag-input'),
+    btnSaveTags: $('#btn-save-tags'),
   };
 
   // ---- State specific to adding videos ----
@@ -198,6 +207,13 @@
       toast.classList.add('hiding');
       toast.addEventListener('animationend', () => toast.remove());
     }, 3000);
+  }
+  
+  function parseTags(tagString) {
+    if (!tagString) return [];
+    return tagString.split(',')
+      .map(t => t.trim().toLowerCase())
+      .filter(t => t.length > 0);
   }
 
   // ---- Auth (Google Identity Services) ----
@@ -604,16 +620,18 @@
         `;
         item.addEventListener('click', () => {
           hide(dom.playlistModal);
-          addToPlaylist(videoId, pl.id, btnEl);
+          const tagsStr = dom.playlistModalTags.value;
+          addToPlaylist(videoId, pl.id, btnEl, tagsStr);
         });
         dom.modalPlaylistList.appendChild(item);
       });
     }
     
+    dom.playlistModalTags.value = '';
     show(dom.playlistModal);
   }
 
-  async function addToPlaylist(videoId, playlistId, btnEl) {
+  async function addToPlaylist(videoId, playlistId, btnEl, tagsStr = '') {
     const originalText = btnEl.innerHTML;
     btnEl.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;border-top-color:#fff;"></div>';
     btnEl.disabled = true;
@@ -643,6 +661,13 @@
       showToast('Added to playlist successfully!');
       btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Added';
       btnEl.style.background = 'var(--green)';
+
+      // Process tags if provided
+      const tags = parseTags(tagsStr);
+      if (tags.length > 0) {
+        state.videoTags[videoId] = tags;
+        localStorage.setItem('yt_explorer_tags', JSON.stringify(state.videoTags));
+      }
       
       // Trigger a silent refresh of playlists and current view
       silentRefresh();
@@ -735,11 +760,12 @@
       });
     }
 
-    // Keywords
+    // Keywords and Custom Tags
     if (state.keywords.trim()) {
       const kws = state.keywords.split(',').map((k) => k.trim().toLowerCase()).filter(Boolean);
       videos = videos.filter((v) => {
-        const text = (v.title + ' ' + v.description + ' ' + v.tags.join(' ')).toLowerCase();
+        const customTags = state.videoTags[v.id] || [];
+        const text = (v.title + ' ' + v.description + ' ' + v.tags.join(' ') + ' ' + customTags.join(' ')).toLowerCase();
         return kws.some((kw) => text.includes(kw));
       });
     }
@@ -787,11 +813,23 @@
     dom.videoGrid.innerHTML = '';
     state.filteredVideos.forEach((v, i) => {
       const isWatched = state.watchedVideos.has(v.id);
+      const customTags = state.videoTags[v.id] || [];
+      const hasTags = customTags.length > 0;
+      
+      const tagsHtml = hasTags 
+        ? `<div class="video-tags-container">
+            ${customTags.map(t => `<span class="video-custom-tag">${escHtml(t)}</span>`).join('')}
+           </div>`
+        : '';
+        
       const card = document.createElement('div');
       card.className = 'video-card' + (isWatched ? ' watched' : '');
       card.style.animationDelay = `${Math.min(i, 8) * 0.05}s`;
       card.innerHTML = `
         <div class="video-thumb-wrapper">
+          <button class="btn-tag-video ${hasTags ? 'has-tags' : ''}" title="Edit Tags">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z M7 7h.01"/></svg>
+          </button>
           <img class="video-thumb" src="${v.thumbnail}" alt="${escHtml(v.title)}" loading="lazy" />
           ${isWatched ? '<span class="watched-badge"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Watched</span>' : ''}
           <span class="video-duration-badge">${v.durationFormatted}</span>
@@ -817,6 +855,7 @@
             <span class="video-category-badge">${escHtml(v.category)}</span>
             ${v.isPodcast ? '<span class="video-category-badge" style="background:rgba(168,85,247,0.12);color:var(--purple);">Podcast</span>' : ''}
           </div>
+          ${tagsHtml}
         </div>
       `;
 
@@ -850,8 +889,40 @@
         }
       }
 
+      // Tag Video Logic
+      const tagBtn = card.querySelector('.btn-tag-video');
+      tagBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openTagModal(v.id);
+      });
+
       dom.videoGrid.appendChild(card);
     });
+  }
+
+  // ---- Tagging Modals ----
+  let videoToTagId = null;
+  function openTagModal(videoId) {
+    videoToTagId = videoId;
+    const currentTags = state.videoTags[videoId] || [];
+    dom.tagInput.value = currentTags.join(', ');
+    show(dom.tagModal);
+    setTimeout(() => dom.tagInput.focus(), 100);
+  }
+
+  function saveTags() {
+    if (!videoToTagId) return;
+    const tags = parseTags(dom.tagInput.value);
+    
+    if (tags.length === 0) {
+      delete state.videoTags[videoToTagId];
+    } else {
+      state.videoTags[videoToTagId] = tags;
+    }
+    
+    localStorage.setItem('yt_explorer_tags', JSON.stringify(state.videoTags));
+    hide(dom.tagModal);
+    applyFilters(); // Re-render to show new tags and re-apply filters if needed
   }
 
   function escHtml(str) {
@@ -1118,6 +1189,20 @@
     dom.btnAddFollow.addEventListener('click', followPlaylist);
     dom.followInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') followPlaylist();
+    });
+
+    // Tag Modal
+    dom.btnCloseTagModal.addEventListener('click', () => {
+      hide(dom.tagModal);
+    });
+    
+    dom.tagModal.addEventListener('click', (e) => {
+      if (e.target === dom.tagModal) hide(dom.tagModal);
+    });
+
+    dom.btnSaveTags.addEventListener('click', saveTags);
+    dom.tagInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveTags();
     });
   }
 
