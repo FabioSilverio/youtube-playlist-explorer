@@ -36,6 +36,9 @@
     // Category map from YouTube
     categoryMap: {},
     detectedCategories: new Set(),
+
+    // Followed Playlists
+    followedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_followed') || '[]'),
   };
 
   // ---- DOM refs ----
@@ -96,6 +99,12 @@
     playlistModal: $('#playlist-modal'),
     modalPlaylistList: $('#modal-playlist-list'),
     btnCloseModal: $('#btn-close-modal'),
+
+    btnFollowPlaylist: $('#btn-follow-playlist'),
+    followModal: $('#follow-modal'),
+    btnCloseFollowModal: $('#btn-close-follow-modal'),
+    followInput: $('#follow-input'),
+    btnAddFollow: $('#btn-add-follow'),
   };
 
   // ---- State specific to adding videos ----
@@ -255,8 +264,12 @@
   }
 
   // ---- Playlists ----
-  async function fetchPlaylists(pageToken = '') {
+  async function fetchPlaylists(pageToken = '', isSilent = false) {
     try {
+      if (!pageToken) {
+        state.playlists = []; // Clear on first page
+      }
+      
       let url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
@@ -265,10 +278,10 @@
       dom.playlistCount.textContent = state.playlists.length;
 
       if (data.nextPageToken) {
-        await fetchPlaylists(data.nextPageToken);
+        await fetchPlaylists(data.nextPageToken, isSilent);
+      } else {
+        renderPlaylists();
       }
-
-      renderPlaylists();
     } catch (e) {
       console.error('Playlists error:', e);
     }
@@ -323,6 +336,43 @@
       div.addEventListener('click', () => selectPlaylist(pl.id, div));
       dom.sidebarList.appendChild(div);
     });
+
+    if (state.followedPlaylists.length > 0) {
+      const divider = document.createElement('div');
+      divider.style.margin = '16px 10px 8px';
+      divider.style.fontSize = '0.75rem';
+      divider.style.fontWeight = '600';
+      divider.style.color = 'var(--text-muted)';
+      divider.style.textTransform = 'uppercase';
+      divider.textContent = 'Followed Playlists';
+      dom.sidebarList.appendChild(divider);
+
+      state.followedPlaylists.forEach((pl) => {
+        const thumb = pl.snippet.thumbnails?.medium?.url || pl.snippet.thumbnails?.default?.url || '';
+        const count = pl.contentDetails?.itemCount || 0;
+
+        const div = document.createElement('div');
+        div.className = 'playlist-item' + (state.activePlaylistId === pl.id ? ' active' : '');
+        div.innerHTML = `
+          <img class="playlist-thumb" src="${thumb}" alt="" loading="lazy" />
+          <div class="playlist-meta">
+            <div class="playlist-title" title="${pl.snippet.title}">${pl.snippet.title}</div>
+            <div class="playlist-video-count">${count} video${count !== 1 ? 's' : ''}</div>
+          </div>
+          <button class="playlist-remove-btn" title="Unfollow playlist" data-id="${pl.id}">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        `;
+        
+        div.querySelector('.playlist-remove-btn').addEventListener('click', (e) => {
+          e.stopPropagation();
+          unfollowPlaylist(pl.id);
+        });
+        
+        div.addEventListener('click', () => selectPlaylist(pl.id, div));
+        dom.sidebarList.appendChild(div);
+      });
+    }
   }
 
   async function selectPlaylist(playlistId, el) {
@@ -368,15 +418,21 @@
   }
 
   // ---- Videos ----
-  async function loadPlaylistVideos(pageToken = '') {
-    if (state.isLoading) return;
-    state.isLoading = true;
-    show(dom.loadingSpinner);
-    hide(dom.emptyState);
-    hide(dom.loadMoreWrapper);
-    if (!pageToken) dom.videoGrid.innerHTML = '';
+  async function loadPlaylistVideos(pageToken = '', isSilent = false) {
+    if (state.isLoading && !isSilent) return;
+    if (!isSilent) {
+      state.isLoading = true;
+      show(dom.loadingSpinner);
+      hide(dom.emptyState);
+      hide(dom.loadMoreWrapper);
+      if (!pageToken) dom.videoGrid.innerHTML = '';
+    }
 
     try {
+      if (!pageToken && isSilent) {
+        state.allVideos = [];
+        state.detectedCategories = new Set();
+      }
       let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${state.activePlaylistId}&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
@@ -442,8 +498,10 @@
     } catch (e) {
       console.error('Video load error:', e);
     } finally {
-      state.isLoading = false;
-      hide(dom.loadingSpinner);
+      if (!isSilent) {
+        state.isLoading = false;
+        hide(dom.loadingSpinner);
+      }
     }
   }
 
@@ -586,11 +644,30 @@
       btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Added';
       btnEl.style.background = 'var(--green)';
       
+      // Trigger a silent refresh of playlists and current view
+      silentRefresh();
+      
     } catch (e) {
       console.error('Error adding to playlist:', e);
       showToast('Failed to add video. Make sure you have permission.', 'error');
       btnEl.innerHTML = originalText;
       btnEl.disabled = false;
+    }
+  }
+
+  async function silentRefresh() {
+    if (!state.accessToken) return;
+    
+    try {
+      // Refresh playlists
+      await fetchPlaylists('', true);
+      
+      // Refresh active playlist videos if applicable
+      if (state.activePlaylistId && state.activePlaylistId !== 'DISCOVER') {
+        await loadPlaylistVideos('', true);
+      }
+    } catch (e) {
+      console.error('Silent refresh failed:', e);
     }
   }
 
@@ -1023,6 +1100,86 @@
     dom.playlistModal.addEventListener('click', (e) => {
       if (e.target === dom.playlistModal) hide(dom.playlistModal);
     });
+
+    // Follow Modal
+    dom.btnFollowPlaylist.addEventListener('click', () => {
+      show(dom.followModal);
+      setTimeout(() => dom.followInput.focus(), 100);
+    });
+    
+    dom.btnCloseFollowModal.addEventListener('click', () => {
+      hide(dom.followModal);
+    });
+    
+    dom.followModal.addEventListener('click', (e) => {
+      if (e.target === dom.followModal) hide(dom.followModal);
+    });
+    
+    dom.btnAddFollow.addEventListener('click', followPlaylist);
+    dom.followInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') followPlaylist();
+    });
+  }
+
+  async function followPlaylist() {
+    const input = dom.followInput.value.trim();
+    if (!input) return;
+    
+    // Extract playlist ID from URL or assume it's an ID
+    let playlistId = input;
+    try {
+      if (input.includes('youtube.com') || input.includes('youtu.be')) {
+        const url = new URL(input);
+        playlistId = url.searchParams.get('list') || input;
+      }
+    } catch(e) {}
+    
+    // Check if already followed or in user's own playlists
+    if (state.playlists.some(p => p.id === playlistId) || state.followedPlaylists.some(p => p.id === playlistId)) {
+      showToast('Playlist already in your sidebar', 'error');
+      return;
+    }
+    
+    const originalText = dom.btnAddFollow.innerHTML;
+    dom.btnAddFollow.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;border-top-color:#fff;"></div>';
+    dom.btnAddFollow.disabled = true;
+
+    try {
+      const url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&id=${playlistId}`;
+      const data = await apiFetch(url);
+      
+      if (!data.items || data.items.length === 0) {
+        showToast('Playlist not found or is private.', 'error');
+      } else {
+        const pl = data.items[0];
+        state.followedPlaylists.push(pl);
+        localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
+        renderPlaylists();
+        showToast('Playlist followed successfully!');
+        hide(dom.followModal);
+        dom.followInput.value = '';
+      }
+    } catch(e) {
+      console.error('Error fetching playlist:', e);
+      showToast('Failed to follow playlist. Check the link.', 'error');
+    } finally {
+      dom.btnAddFollow.innerHTML = originalText;
+      dom.btnAddFollow.disabled = false;
+    }
+  }
+
+  function unfollowPlaylist(playlistId) {
+    state.followedPlaylists = state.followedPlaylists.filter(p => p.id !== playlistId);
+    localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
+    renderPlaylists();
+    if (state.activePlaylistId === playlistId) {
+      if (state.playlists.length > 0) {
+        // Fake a click on the first playlist item to select it
+        const first = dom.sidebarList.querySelector('.playlist-item');
+        if (first) first.click();
+      }
+    }
+    showToast('Playlist removed');
   }
 
   // ---- Init ----
@@ -1062,6 +1219,9 @@
         // If session expired, set up silent re-auth
         if (!restored && !state.accessToken) {
           // User needs to click login
+        } else if (restored) {
+          // Setup 1-minute auto refresh if logged in
+          setInterval(silentRefresh, 60000);
         }
       }
     }, 100);
