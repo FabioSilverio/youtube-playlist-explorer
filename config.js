@@ -9,7 +9,7 @@
 // 4. Paste your Client ID below:
 
 const CONFIG = {
-  CLIENT_ID: 'YOUR_CLIENT_ID_HERE',
+  CLIENT_ID: '243815206995-4q78gfudru073crceoceppb9tgjbl37b.apps.googleusercontent.com',
   API_KEY: '', // Optional: for public-only access without OAuth
   SCOPES: 'https://www.googleapis.com/auth/youtube.readonly',
   DISCOVERY_DOC: 'https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest',
