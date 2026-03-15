@@ -1,0 +1,17 @@
+// ============================================
+// YouTube Playlist Explorer — Configuration
+// ============================================
+// 1. Go to https://console.cloud.google.com/
+// 2. Create a project & enable "YouTube Data API v3"
+// 3. Create OAuth 2.0 Client ID (Web app)
+//    - Authorized JS origin: http://localhost:3000
+//    - Authorized redirect URI: http://localhost:3000
+// 4. Paste your Client ID below:
+
+const CONFIG = {
+  CLIENT_ID: 'YOUR_CLIENT_ID_HERE',
+  API_KEY: '', // Optional: for public-only access without OAuth
+  SCOPES: 'https://www.googleapis.com/auth/youtube.readonly',
+  DISCOVERY_DOC: 'https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest',
+  MAX_RESULTS: 50,
+};
