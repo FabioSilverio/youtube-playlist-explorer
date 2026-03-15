@@ -131,12 +131,13 @@
     });
 
     dom.btnLogin.addEventListener('click', () => {
-      tokenClient.requestAccessToken({ prompt: 'consent' });
+      tokenClient.requestAccessToken({ prompt: 'select_account' });
     });
 
     dom.btnLogout.addEventListener('click', () => {
       google.accounts.oauth2.revoke(state.accessToken, () => {
         state.accessToken = null;
+        localStorage.removeItem('yt_explorer_session');
         show(dom.loginOverlay);
         hide(dom.app);
       });
@@ -149,6 +150,14 @@
       return;
     }
     state.accessToken = resp.access_token;
+
+    // Persist session
+    const session = {
+      accessToken: resp.access_token,
+      expiresAt: Date.now() + (resp.expires_in || 3600) * 1000,
+    };
+    localStorage.setItem('yt_explorer_session', JSON.stringify(session));
+
     hide(dom.loginOverlay);
     show(dom.app);
     fetchUserInfo();
@@ -638,14 +647,43 @@
   }
 
   // ---- Init ----
+  function tryRestoreSession() {
+    try {
+      const raw = localStorage.getItem('yt_explorer_session');
+      if (!raw) return false;
+      const session = JSON.parse(raw);
+      if (!session.accessToken || Date.now() > session.expiresAt) {
+        localStorage.removeItem('yt_explorer_session');
+        return false;
+      }
+      state.accessToken = session.accessToken;
+      hide(dom.loginOverlay);
+      show(dom.app);
+      fetchUserInfo();
+      fetchPlaylists();
+      return true;
+    } catch {
+      localStorage.removeItem('yt_explorer_session');
+      return false;
+    }
+  }
+
   function init() {
     bindEvents();
 
-    // Wait for Google Identity Services to load
+    // Try to restore previous session first
+    const restored = tryRestoreSession();
+
+    // Wait for Google Identity Services to load (needed for new logins or token refresh)
     const checkGIS = setInterval(() => {
       if (typeof google !== 'undefined' && google.accounts?.oauth2) {
         clearInterval(checkGIS);
         initAuth();
+
+        // If session expired, set up silent re-auth
+        if (!restored && !state.accessToken) {
+          // User needs to click login
+        }
       }
     }, 100);
   }
