@@ -16,7 +16,9 @@
     nextPageToken: null,
     isLoading: false,
 
-    // Filters
+    // Filters & Search
+    searchMode: 'filter', // 'filter' | 'youtube'
+    ytSearchResults: [],
     searchQuery: '',
     durationFilter: 'all',
     dateFilter: 'all',
@@ -54,6 +56,7 @@
     playlistCount: $('#playlist-count'),
 
     searchInput: $('#search-input'),
+    searchType: $('#search-type'),
     btnClearSearch: $('#btn-clear-search'),
 
     durationChips: $('#duration-chips'),
@@ -81,6 +84,8 @@
     welcomeState: $('#welcome-state'),
     loadMoreWrapper: $('#load-more-wrapper'),
     btnLoadMore: $('#btn-load-more'),
+    
+    toastContainer: $('#toast-container'),
   };
 
   // ---- YouTube Category mapping (most common) ----
@@ -154,6 +159,23 @@
 
   function show(el) { el.classList.remove('hidden'); }
   function hide(el) { el.classList.add('hidden'); }
+
+  function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    
+    const icon = type === 'success' 
+      ? '<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>'
+      : '<svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>';
+      
+    toast.innerHTML = `${icon}<span>${escHtml(message)}</span>`;
+    dom.toastContainer.appendChild(toast);
+    
+    setTimeout(() => {
+      toast.classList.add('hiding');
+      toast.addEventListener('animationend', () => toast.remove());
+    }, 3000);
+  }
 
   // ---- Auth (Google Identity Services) ----
   let tokenClient;
@@ -391,12 +413,118 @@
     });
   }
 
-  // ---- Filters ----
-  function applyFilters() {
-    let videos = [...state.allVideos];
+  // ---- Filters & YouTube Search ----
+  async function performYoutubeSearch() {
+    if (!state.searchQuery) {
+      state.ytSearchResults = [];
+      applyFilters();
+      return;
+    }
+    
+    state.isLoading = true;
+    show(dom.loadingSpinner);
+    hide(dom.emptyState);
+    hide(dom.loadMoreWrapper);
+    dom.videoGrid.innerHTML = '';
+    
+    try {
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(state.searchQuery)}&type=video&maxResults=24`;
+      const data = await apiFetch(url);
+      
+      const videoIds = data.items.map(item => item.id.videoId).filter(Boolean);
+      let videoDetails = {};
+      
+      if (videoIds.length > 0) {
+        const detailUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${videoIds.join(',')}&maxResults=50`;
+        const detailData = await apiFetch(detailUrl);
+        detailData.items.forEach((v) => {
+          videoDetails[v.id] = {
+            duration: parseDuration(v.contentDetails.duration),
+            categoryId: v.snippet.categoryId,
+            description: v.snippet.description || '',
+          };
+        });
+      }
 
-    // Search
-    if (state.searchQuery) {
+      state.ytSearchResults = data.items.map(item => {
+        const vid = item.id.videoId;
+        const detail = videoDetails[vid] || { duration: 0, categoryId: '24', description: '' };
+        const catName = YT_CATEGORIES[detail.categoryId] || 'Other';
+        
+        return {
+          id: vid,
+          title: item.snippet.title,
+          channel: item.snippet.channelTitle || '',
+          thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || '',
+          addedAt: item.snippet.publishedAt,
+          duration: detail.duration,
+          durationFormatted: formatDuration(detail.duration),
+          category: catName,
+          isPodcast: false, // simplified for search
+          description: detail.description,
+          tags: [],
+        };
+      });
+      
+    } catch (e) {
+      console.error('YouTube Search error:', e);
+      showToast('Search failed. Check your connection or API limit.', 'error');
+    } finally {
+      state.isLoading = false;
+      hide(dom.loadingSpinner);
+      applyFilters(); // will render ytSearchResults
+    }
+  }
+
+  async function addToPlaylist(videoId, btnEl) {
+    if (!state.activePlaylistId || state.activePlaylistId === 'LL') {
+      showToast('Please select a valid playlist first (cannot add to Liked Videos).', 'error');
+      return;
+    }
+    
+    const originalText = btnEl.innerHTML;
+    btnEl.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;border-top-color:#fff;"></div>';
+    btnEl.disabled = true;
+
+    try {
+      const res = await fetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${state.accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          snippet: {
+            playlistId: state.activePlaylistId,
+            resourceId: {
+              kind: 'youtube#video',
+              videoId: videoId
+            }
+          }
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+      
+      showToast('Added to playlist successfully!');
+      btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Added';
+      btnEl.style.background = 'var(--green)';
+      
+    } catch (e) {
+      console.error('Error adding to playlist:', e);
+      showToast('Failed to add video. Make sure you have permission.', 'error');
+      btnEl.innerHTML = originalText;
+      btnEl.disabled = false;
+    }
+  }
+
+  function applyFilters() {
+    let videos = state.searchMode === 'youtube' ? [...state.ytSearchResults] : [...state.allVideos];
+
+    // Search (only if local filtering)
+    if (state.searchQuery && state.searchMode === 'filter') {
       const q = state.searchQuery.toLowerCase();
       videos = videos.filter((v) =>
         v.title.toLowerCase().includes(q) ||
@@ -473,13 +601,17 @@
     updateActiveFilterTags();
     dom.resultsCount.textContent = `${videos.length} video${videos.length !== 1 ? 's' : ''} found`;
 
-    if (state.nextPageToken) {
-      show(dom.loadMoreWrapper);
+    if (state.searchMode === 'youtube') {
+      hide(dom.loadMoreWrapper); // basic search doesn't implement pagination yet
     } else {
-      hide(dom.loadMoreWrapper);
+      if (state.nextPageToken) {
+        show(dom.loadMoreWrapper);
+      } else {
+        hide(dom.loadMoreWrapper);
+      }
     }
 
-    if (videos.length === 0 && state.allVideos.length > 0) {
+    if (videos.length === 0 && (state.allVideos.length > 0 || state.searchMode === 'youtube')) {
       show(dom.emptyState);
     } else {
       hide(dom.emptyState);
@@ -512,9 +644,16 @@
           <img class="video-thumb" src="${v.thumbnail}" alt="${escHtml(v.title)}" loading="lazy" />
           ${isWatched ? '<span class="watched-badge"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Watched</span>' : ''}
           <span class="video-duration-badge">${v.durationFormatted}</span>
-          <button class="btn-mark-watched ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
-            <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
-          </button>
+          ${state.searchMode === 'filter' 
+            ? `<button class="btn-mark-watched ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
+                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
+               </button>`
+            : (state.activePlaylistId && state.activePlaylistId !== 'LL') 
+               ? `<button class="btn-add-playlist" data-vid="${v.id}" title="Add to Active Playlist">
+                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Add
+                  </button>`
+               : ''
+          }
           <div class="video-play-overlay">
             <div class="play-btn-circle">
               <svg width="22" height="22" fill="#fff" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
@@ -542,13 +681,25 @@
       thumbWrap.addEventListener('click', openVideo);
       title.addEventListener('click', openVideo);
 
-      // Watched toggle logic
-      const watchBtn = card.querySelector('.btn-mark-watched');
-      watchBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleWatched(v.id);
-        applyFilters(); // Re-render to update badges & filters
-      });
+      // Watched / Add toggle logic
+      if (state.searchMode === 'filter') {
+        const watchBtn = card.querySelector('.btn-mark-watched');
+        if (watchBtn) {
+          watchBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleWatched(v.id);
+            applyFilters(); 
+          });
+        }
+      } else {
+        const addBtn = card.querySelector('.btn-add-playlist');
+        if (addBtn) {
+          addBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            addToPlaylist(v.id, addBtn);
+          });
+        }
+      }
 
       dom.videoGrid.appendChild(card);
     });
@@ -641,12 +792,37 @@
       }
     });
 
-    // Search
+    // Search Type
+    dom.searchType.addEventListener('change', () => {
+      state.searchMode = dom.searchType.value;
+      
+      // Toggle visibility of filter bar depending on mode if desired, 
+      // but for now we just clear the input and force re-render
+      dom.searchInput.value = '';
+      state.searchQuery = '';
+      hide(dom.btnClearSearch);
+      
+      if (state.searchMode === 'youtube') {
+        // Show placeholders or perform default search
+        dom.searchInput.placeholder = 'Search all of YouTube...';
+        state.ytSearchResults = [];
+      } else {
+        dom.searchInput.placeholder = 'Search videos by title...';
+      }
+      applyFilters();
+    });
+
+    // Search Input
     const debouncedSearch = debounce(() => {
       state.searchQuery = dom.searchInput.value.trim();
       dom.btnClearSearch.classList.toggle('hidden', !state.searchQuery);
-      applyFilters();
-    }, 300);
+      
+      if (state.searchMode === 'youtube') {
+        performYoutubeSearch();
+      } else {
+        applyFilters();
+      }
+    }, 500);
     dom.searchInput.addEventListener('input', debouncedSearch);
 
     dom.btnClearSearch.addEventListener('click', () => {

@@ -164,33 +164,63 @@ body {
 
 .search-wrapper {
   flex: 1;
-  max-width: 560px;
+  max-width: 600px;
   position: relative;
+  display: flex;
+  align-items: center;
   margin: 0 auto;
-}
-
-.search-icon {
-  position: absolute;
-  left: 14px; top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-muted);
-  pointer-events: none;
-}
-
-.search-input {
-  width: 100%;
-  padding: 10px 40px 10px 42px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
+  transition: var(--transition-base);
+}
+.search-wrapper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.search-type-select {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 10px 12px 10px 16px;
+  cursor: pointer;
+  outline: none;
+  border-radius: var(--radius-full) 0 0 var(--radius-full);
+  white-space: nowrap;
+}
+.search-type-select:hover { color: var(--text-primary); }
+.search-type-select option { background: var(--bg-secondary); color: var(--text-primary); }
+
+.search-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 8px;
+}
+
+.search-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
+.search-input {
+  flex: 1;
+  width: 100%;
+  padding: 10px 36px 10px 8px;
+  background: transparent;
+  border: none;
   color: var(--text-primary);
   font-family: var(--font);
   font-size: 0.93rem;
   outline: none;
-  transition: var(--transition-base);
 }
 .search-input::placeholder { color: var(--text-muted); }
-.search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 
 .btn-clear-search {
   position: absolute; right: 10px; top: 50%;
@@ -633,6 +663,38 @@ body {
   color: var(--text-secondary);
 }
 
+/* Toast Notifications */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 9999;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  animation: slideInRight 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.toast.toast-success { border-left: 4px solid var(--green); }
+.toast.toast-error { border-left: 4px solid var(--accent); }
+.toast.hiding { animation: slideOutRight 0.3s ease forwards; }
+
+.toast svg { flex-shrink: 0; }
+.toast-success svg { color: var(--green); }
+.toast-error svg { color: var(--accent); }
+
 /* Load More */
 .load-more-wrapper { text-align: center; padding: 24px 0 20px; }
 .btn-load-more {
@@ -675,6 +737,8 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes shimmer { to { background-position: -200% 0; } }
+@keyframes slideInRight { from { transform: translateX(120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes slideOutRight { from { transform: translateX(0); opacity: 1; } to { transform: translateX(120%); opacity: 0; } }
 
 /* Stagger animation for grid cards */
 .video-card:nth-child(1) { animation-delay: 0s; }
@@ -795,6 +859,38 @@ body {
 }
 
 .video-card:hover .btn-mark-watched {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.btn-add-playlist {
+  position: absolute;
+  top: 8px; right: 8px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-full);
+  padding: 6px 12px;
+  font-family: var(--font);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 3;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: var(--shadow-md);
+}
+
+.btn-add-playlist:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.video-card:hover .btn-add-playlist {
   opacity: 1;
   transform: translateY(0);
 }
