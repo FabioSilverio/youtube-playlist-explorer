@@ -51,13 +51,8 @@
 
       <!-- Search -->
       <div class="search-wrapper">
-        <select id="search-type" class="search-type-select">
-          <option value="filter">In Playlist</option>
-          <option value="youtube">YouTube</option>
-        </select>
-        <div class="search-divider"></div>
         <svg class="search-icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="search-input" type="text" class="search-input" placeholder="Search videos by title..." autocomplete="off" />
+        <input id="search-input" type="text" class="search-input" placeholder="Search videos in active playlist..." autocomplete="off" />
         <button id="btn-clear-search" class="btn-clear-search hidden" aria-label="Clear search">✕</button>
       </div>
 
@@ -87,6 +82,16 @@
 
       <!-- Main Content -->
       <main id="main-content" class="main-content">
+
+        <!-- Discover / YouTube Search Bar -->
+        <div id="discover-bar" class="filter-bar hidden" style="flex-direction: row; align-items: center;">
+          <div class="search-wrapper" style="flex: 1; max-width: none; margin: 0;">
+            <svg class="search-icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="discover-input" type="text" class="search-input" placeholder="Search all of YouTube..." autocomplete="off" />
+            <button id="btn-clear-discover" class="btn-clear-search hidden" aria-label="Clear search">✕</button>
+          </div>
+          <button id="btn-search-discover" class="btn-small">Search</button>
+        </div>
 
         <!-- Filter Bar -->
         <div id="filter-bar" class="filter-bar">
@@ -235,6 +240,21 @@
   <!-- Toast Container -->
   <div id="toast-container" class="toast-container"></div>
   
+  <!-- Playlist Selection Modal -->
+  <div id="playlist-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Add to Playlist</h3>
+        <button id="btn-close-modal" class="btn-icon">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="modal-playlist-list" class="modal-playlist-list">
+          <!-- Playlists injected here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>

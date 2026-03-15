@@ -56,8 +56,14 @@
     playlistCount: $('#playlist-count'),
 
     searchInput: $('#search-input'),
-    searchType: $('#search-type'),
     btnClearSearch: $('#btn-clear-search'),
+    
+    discoverBar: $('#discover-bar'),
+    discoverInput: $('#discover-input'),
+    btnClearDiscover: $('#btn-clear-discover'),
+    btnSearchDiscover: $('#btn-search-discover'),
+    
+    filterBar: $('#filter-bar'),
 
     durationChips: $('#duration-chips'),
     dateChips: $('#date-chips'),
@@ -86,7 +92,15 @@
     btnLoadMore: $('#btn-load-more'),
     
     toastContainer: $('#toast-container'),
+    
+    playlistModal: $('#playlist-modal'),
+    modalPlaylistList: $('#modal-playlist-list'),
+    btnCloseModal: $('#btn-close-modal'),
   };
+
+  // ---- State specific to adding videos ----
+  let videoToAdd = null;
+  let btnToAdd = null;
 
   // ---- YouTube Category mapping (most common) ----
   const YT_CATEGORIES = {
@@ -263,6 +277,21 @@
   function renderPlaylists() {
     dom.sidebarList.innerHTML = '';
 
+    // Add "Discover YouTube" special entry
+    const discoverItem = document.createElement('div');
+    discoverItem.className = 'playlist-item' + (state.activePlaylistId === 'DISCOVER' ? ' active' : '');
+    discoverItem.innerHTML = `
+      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+        <svg width="20" height="20" fill="var(--accent)" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      </div>
+      <div class="playlist-meta">
+        <div class="playlist-title">Discover YouTube</div>
+        <div class="playlist-video-count">Search globally</div>
+      </div>
+    `;
+    discoverItem.addEventListener('click', () => selectPlaylist('DISCOVER', discoverItem));
+    dom.sidebarList.appendChild(discoverItem);
+
     // Add "Liked Videos" as a special entry
     const likedItem = document.createElement('div');
     likedItem.className = 'playlist-item' + (state.activePlaylistId === 'LL' ? ' active' : '');
@@ -317,7 +346,25 @@
     }
 
     hide(dom.welcomeState);
-    await loadPlaylistVideos();
+    
+    if (playlistId === 'DISCOVER') {
+      state.searchMode = 'youtube';
+      show(dom.discoverBar);
+      hide(dom.filterBar);
+      dom.videoGrid.innerHTML = '';
+      hide(dom.emptyState);
+      hide(dom.loadMoreWrapper);
+      
+      // If we already have a discover search, show it. Otherwise wait for user search.
+      if (dom.discoverInput.value.trim()) {
+        performYoutubeSearch();
+      }
+    } else {
+      state.searchMode = 'filter';
+      hide(dom.discoverBar);
+      show(dom.filterBar);
+      await loadPlaylistVideos();
+    }
   }
 
   // ---- Videos ----
@@ -415,12 +462,14 @@
 
   // ---- Filters & YouTube Search ----
   async function performYoutubeSearch() {
-    if (!state.searchQuery) {
+    const query = dom.discoverInput.value.trim();
+    if (!query) {
       state.ytSearchResults = [];
       applyFilters();
       return;
     }
     
+    state.searchQuery = query; // keep in sync
     state.isLoading = true;
     show(dom.loadingSpinner);
     hide(dom.emptyState);
@@ -428,7 +477,7 @@
     dom.videoGrid.innerHTML = '';
     
     try {
-      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(state.searchQuery)}&type=video&maxResults=24`;
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=24&order=relevance`;
       const data = await apiFetch(url);
       
       const videoIds = data.items.map(item => item.id.videoId).filter(Boolean);
@@ -476,12 +525,37 @@
     }
   }
 
-  async function addToPlaylist(videoId, btnEl) {
-    if (!state.activePlaylistId || state.activePlaylistId === 'LL') {
-      showToast('Please select a valid playlist first (cannot add to Liked Videos).', 'error');
-      return;
+  function openPlaylistModal(videoId, btnEl) {
+    videoToAdd = videoId;
+    btnToAdd = btnEl;
+    
+    dom.modalPlaylistList.innerHTML = '';
+    
+    const validPlaylists = state.playlists.filter(p => p.id !== 'LL');
+    
+    if (validPlaylists.length === 0) {
+      dom.modalPlaylistList.innerHTML = '<p style="color:var(--text-muted);font-size:0.9rem;">You don\'t have any playlists to add to.</p>';
+    } else {
+      validPlaylists.forEach(pl => {
+        const thumb = pl.snippet.thumbnails?.medium?.url || pl.snippet.thumbnails?.default?.url || '';
+        const item = document.createElement('div');
+        item.className = 'modal-playlist-item';
+        item.innerHTML = `
+          <img class="modal-playlist-thumb" src="${thumb}" alt="" />
+          <span class="modal-playlist-title">${escHtml(pl.snippet.title)}</span>
+        `;
+        item.addEventListener('click', () => {
+          hide(dom.playlistModal);
+          addToPlaylist(videoId, pl.id, btnEl);
+        });
+        dom.modalPlaylistList.appendChild(item);
+      });
     }
     
+    show(dom.playlistModal);
+  }
+
+  async function addToPlaylist(videoId, playlistId, btnEl) {
     const originalText = btnEl.innerHTML;
     btnEl.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;border-top-color:#fff;"></div>';
     btnEl.disabled = true;
@@ -495,7 +569,7 @@
         },
         body: JSON.stringify({
           snippet: {
-            playlistId: state.activePlaylistId,
+            playlistId: playlistId,
             resourceId: {
               kind: 'youtube#video',
               videoId: videoId
@@ -648,11 +722,9 @@
             ? `<button class="btn-mark-watched ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
                 <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
                </button>`
-            : (state.activePlaylistId && state.activePlaylistId !== 'LL') 
-               ? `<button class="btn-add-playlist" data-vid="${v.id}" title="Add to Active Playlist">
-                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Add
-                  </button>`
-               : ''
+            : `<button class="btn-add-playlist" data-vid="${v.id}" title="Add to Playlist">
+                 <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Add
+               </button>`
           }
           <div class="video-play-overlay">
             <div class="play-btn-circle">
@@ -696,7 +768,7 @@
         if (addBtn) {
           addBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            addToPlaylist(v.id, addBtn);
+            openPlaylistModal(v.id, addBtn);
           });
         }
       }
@@ -792,33 +864,34 @@
       }
     });
 
-    // Search Type
-    dom.searchType.addEventListener('change', () => {
-      state.searchMode = dom.searchType.value;
-      
-      // Toggle visibility of filter bar depending on mode if desired, 
-      // but for now we just clear the input and force re-render
-      dom.searchInput.value = '';
-      state.searchQuery = '';
-      hide(dom.btnClearSearch);
-      
-      if (state.searchMode === 'youtube') {
-        // Show placeholders or perform default search
-        dom.searchInput.placeholder = 'Search all of YouTube...';
-        state.ytSearchResults = [];
-      } else {
-        dom.searchInput.placeholder = 'Search videos by title...';
-      }
-      applyFilters();
+    // Discover Sub-header Search
+    const triggerDiscover = () => {
+      performYoutubeSearch();
+    };
+    
+    dom.btnSearchDiscover.addEventListener('click', triggerDiscover);
+    
+    dom.discoverInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') triggerDiscover();
+    });
+    
+    dom.discoverInput.addEventListener('input', () => {
+      dom.btnClearDiscover.classList.toggle('hidden', !dom.discoverInput.value.trim());
+    });
+    
+    dom.btnClearDiscover.addEventListener('click', () => {
+      dom.discoverInput.value = '';
+      hide(dom.btnClearDiscover);
+      dom.discoverInput.focus();
     });
 
-    // Search Input
+    // Local Search Input
     const debouncedSearch = debounce(() => {
       state.searchQuery = dom.searchInput.value.trim();
       dom.btnClearSearch.classList.toggle('hidden', !state.searchQuery);
       
       if (state.searchMode === 'youtube') {
-        performYoutubeSearch();
+         // Should not happen as input is cleared, but just in case
       } else {
         applyFilters();
       }
@@ -940,6 +1013,15 @@
         const filterEl = document.getElementById('filter-bar');
         if (filterEl) filterEl.scrollIntoView({ behavior: 'smooth' });
       }
+    });
+    
+    // Modal Close
+    dom.btnCloseModal.addEventListener('click', () => {
+      hide(dom.playlistModal);
+    });
+    
+    dom.playlistModal.addEventListener('click', (e) => {
+      if (e.target === dom.playlistModal) hide(dom.playlistModal);
     });
   }
 
