@@ -9,12 +9,9 @@
 // 4. Paste your Client ID below:
 
 const CONFIG = {
-  // Replace with your actual Client ID
-  CLIENT_ID: '77659556064-0a3stkbbgnt2mffsog8kcvgq0i57ksro.apps.googleusercontent.com',
-
-  // The scopes needed for this application
+  CLIENT_ID: '243815206995-4q78gfudru073crceoceppb9tgjbl37b.apps.googleusercontent.com',
+  API_KEY: '', // Optional: for public-only access without OAuth
   SCOPES: 'https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube',
-
-  // Max results per API call (50 is the YouTube API maximum)
+  DISCOVERY_DOC: 'https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest',
   MAX_RESULTS: 50,
 };
