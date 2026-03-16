@@ -312,12 +312,32 @@
 
   async function fetchUserInfo() {
     try {
-      const data = await apiFetch('https://www.googleapis.com/oauth2/v2/userinfo');
+      const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: {
+          Authorization: `Bearer ${state.accessToken}`,
+        },
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        console.warn('User profile is unavailable for the current token.', res.status);
+        state.user = null;
+        dom.userAvatar.src = '';
+        dom.userName.textContent = '';
+        return null;
+      }
+
+      if (!res.ok) {
+        throw new Error(`User info ${res.status}: ${res.statusText}`);
+      }
+
+      const data = await res.json();
       state.user = data;
       dom.userAvatar.src = data.picture || '';
       dom.userName.textContent = data.name || data.email || '';
+      return data;
     } catch (e) {
       console.error('User info error:', e);
+      return null;
     }
   }
 
