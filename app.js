@@ -270,6 +270,7 @@
       return;
     }
     state.accessToken = resp.access_token;
+    localStorage.setItem('yt_explorer_is_logged_in', 'true');
 
     // Persist session
     const session = {
@@ -278,7 +279,6 @@
       expiresAt: Date.now() + (resp.expires_in || 3500) * 1000, 
     };
     localStorage.setItem('yt_explorer_session', JSON.stringify(session));
-    localStorage.setItem('yt_explorer_is_logged_in', 'true');
 
     setupTokenRefresh();
 
@@ -290,15 +290,7 @@
 
   async function apiFetch(url, options = {}) {
     if (!state.accessToken) {
-       // If a fetch is attempted with no token, immediately halt and prompt login
-       console.warn("Attempted apiFetch without access token. Prompting login.");
-       if (dom.btnLogin) {
-         const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
-         dom.btnLogin.innerHTML = originalSVG + ' Sign in with Google (Session Missing)';
-         dom.btnLogin.disabled = false;
-       }
-       show(dom.loginOverlay);
-       hide(dom.app);
+       console.warn("Attempted apiFetch without access token. Halting request.");
        throw new Error('No access token available.');
     }
     const res = await fetch(url, {
@@ -306,7 +298,7 @@
       headers: { Authorization: `Bearer ${state.accessToken}`, ...(options.headers || {}) },
     });
     if (res.status === 401) {
-      console.warn("API returned 401 Unauthorized. Clearing local token and prompting login.");
+      console.warn("API returned 401 Unauthorized.");
       state.accessToken = null;
       localStorage.removeItem('yt_explorer_session');
       localStorage.setItem('yt_explorer_is_logged_in', 'false');
@@ -1380,11 +1372,6 @@
       }
       
       state.accessToken = session.accessToken;
-      hide(dom.loginOverlay);
-      show(dom.app);
-      fetchUserInfo();
-      fetchPlaylists();
-      setupTokenRefresh();
       return true;
     } catch {
       localStorage.removeItem('yt_explorer_session');
@@ -1399,38 +1386,32 @@
     const restored = tryRestoreSession();
 
     if (isLoggedInUser && restored !== true) {
-        // They were marked as logged in, but token is expired or missing.
-        // Show a loading text on the login button so it's not confusing, and keep the overlay.
         dom.btnLogin.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-top-color:#fff;"></div> Restoring session...';
         dom.btnLogin.disabled = true;
     } else if (restored === true) {
         hide(dom.loginOverlay);
         show(dom.app);
+        fetchUserInfo();
+        fetchPlaylists();
+        setupTokenRefresh();
     }
 
-    // Wait for Google Identity Services to load
     const checkGIS = setInterval(() => {
       if (typeof google !== 'undefined' && google.accounts?.oauth2) {
         clearInterval(checkGIS);
         initAuth();
 
         if (isLoggedInUser && restored !== true) {
-           console.log("Attempting silent token refresh on load...");
-           // This will call handleAuthResponse which hides the overlay on success or shows it on failure
            tokenClient.requestAccessToken({ prompt: 'none' });
            
-           // Fallback in case prompt: 'none' fails silently 
-           // (e.g. 3rd party cookies blocked, user revoked access)
            setTimeout(() => {
              if (!state.accessToken) {
-               console.log("Silent refresh timeout. User needs to login manually.");
                const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
-               dom.btnLogin.innerHTML = originalSVG + ' Sign in with Google (Session Expired)';
+               dom.btnLogin.innerHTML = originalSVG + ' Sign in with Google';
                dom.btnLogin.disabled = false;
                show(dom.loginOverlay);
                hide(dom.app);
                localStorage.setItem('yt_explorer_is_logged_in', 'false');
-               showToast("Session expired. Please log in again.", "error");
              }
            }, 5000);
         }
