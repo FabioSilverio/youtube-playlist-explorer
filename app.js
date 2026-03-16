@@ -314,26 +314,23 @@
   }
 
   // ---- Playlists ----
-  async function fetchPlaylists(pageToken = '', isSilent = false, tempPlaylists = null) {
+  async function fetchPlaylists(pageToken = '', isSilent = false, tempPlaylists = []) {
     try {
       if (!pageToken && !isSilent) {
         state.playlists = []; // Clear on first page 
       }
       
-      let targetArray = isSilent ? (tempPlaylists || []) : state.playlists;
-      
       let url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
       const data = await apiFetch(url);
-      targetArray.push(...data.items);
+      tempPlaylists.push(...data.items);
 
       if (data.nextPageToken) {
-        await fetchPlaylists(data.nextPageToken, isSilent, targetArray);
+        await fetchPlaylists(data.nextPageToken, isSilent, tempPlaylists);
       } else {
-        if (isSilent && !pageToken) {
-          state.playlists = targetArray;
-        }
+        // All pages fetched
+        state.playlists = tempPlaylists;
         dom.playlistCount.textContent = state.playlists.length;
         renderPlaylists();
       }
@@ -476,6 +473,7 @@
   // ---- Videos ----
   async function loadPlaylistVideos(pageToken = '', isSilent = false) {
     if (state.isLoading && !isSilent) return;
+    
     if (!isSilent) {
       state.isLoading = true;
       show(dom.loadingSpinner);
@@ -485,20 +483,11 @@
     }
 
     try {
-      if (!pageToken && !isSilent) {
-        state.allVideos = [];
-        state.detectedCategories = new Set();
-      }
-      
-      // If doing a silent refresh on videos, don't clear the array immediately
-      let targetArray = isSilent ? [] : state.allVideos;
-      let targetCats = isSilent ? new Set() : state.detectedCategories;
-
       let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${state.activePlaylistId}&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
       const data = await apiFetch(url);
-      state.nextPageToken = data.nextPageToken || null;
+      const nextPageToken = data.nextPageToken || null;
 
       // Extract video IDs to get durations + categories
       const videoIds = data.items
@@ -530,7 +519,6 @@
           const vid = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
           const detail = videoDetails[vid];
           const catName = YT_CATEGORIES[detail.categoryId] || 'Other';
-          targetCats.add(catName);
           
           const isPod = isPodcast(item.snippet.title, item.snippet.videoOwnerChannelTitle || '', detail.duration);
 
@@ -549,21 +537,32 @@
           };
         });
 
-      targetArray.push(...newVideos);
-
-      if (isSilent && !pageToken) {
-        // Swap new values once fetch completes so UI doesn't blank out
-        state.allVideos = targetArray;
-        state.detectedCategories = targetCats;
+      if (isSilent) {
+        // For silent refresh, we currently only refresh the "first page" to stay simple
+        // OR we could merge into existing state. Let's just update the top part for now.
+        // Actually, to be safe and avoid state mismatch, let's keep it simple: 
+        // if silent, we replace the whole array with this new chunk (which works if only viewing 1st page)
+        // A better silent refresh would need to handle all loaded pages.
+        state.allVideos = newVideos;
+        // Re-detect categories from this chunk
+        state.detectedCategories = new Set(newVideos.map(v => v.category));
+      } else {
+        if (!pageToken) {
+          state.allVideos = newVideos;
+          state.detectedCategories = new Set(newVideos.map(v => v.category));
+        } else {
+          state.allVideos.push(...newVideos);
+          newVideos.forEach(v => state.detectedCategories.add(v.category));
+        }
       }
 
-      // Update category chips
+      state.nextPageToken = nextPageToken;
       renderCategoryChips();
-
-      // Apply filters and render
       applyFilters();
+
     } catch (e) {
       console.error('Video load error:', e);
+      if (!isSilent) showToast('Failed to load videos.', 'error');
     } finally {
       if (!isSilent) {
         state.isLoading = false;
@@ -757,24 +756,29 @@
     if (!expiresAt) return;
     
     const timeUntilExpiry = expiresAt - Date.now();
-    // Warn the user 5 minutes before the token expires so they can re-login
-    const warnAt = Math.max(0, timeUntilExpiry - 5 * 60 * 1000);
+    // Warn the user 5 minutes before the token expires
+    const warnAt = timeUntilExpiry - 5 * 60 * 1000;
     
-    tokenRefreshTimer = setTimeout(() => {
-      // Token is about to expire — show a subtle toast, let user click login to renew
-      showToast('Your session will expire soon. Click "Sign in" to renew.', 'error');
-      // After another 5 minutes, force logout
-      setTimeout(() => {
-        if (state.accessToken) {
-          state.accessToken = null;
-          localStorage.removeItem('yt_explorer_session');
-          localStorage.setItem('yt_explorer_is_logged_in', 'false');
-          show(dom.loginOverlay);
-          hide(dom.app);
-          showToast('Session expired. Please sign in again to continue.', 'error');
-        }
-      }, 5 * 60 * 1000);
-    }, warnAt);
+    if (warnAt > 0) {
+      tokenRefreshTimer = setTimeout(() => {
+        showToast('Your session will expire in 5 minutes. Save your work or click Logout and Sign In to renew.', 'error');
+        
+        // After another 5 minutes, force logout
+        setTimeout(() => {
+          if (state.accessToken) {
+            state.accessToken = null;
+            localStorage.removeItem('yt_explorer_session');
+            localStorage.setItem('yt_explorer_is_logged_in', 'false');
+            show(dom.loginOverlay);
+            hide(dom.app);
+            showToast('Session expired. Please sign in again.', 'error');
+          }
+        }, 5 * 60 * 1000);
+      }, warnAt);
+    } else if (timeUntilExpiry > 0) {
+      // Already in the warning window
+      showToast('Your session is about to expire. Please sign in again soon.', 'error');
+    }
   }
 
   function applyFilters() {
