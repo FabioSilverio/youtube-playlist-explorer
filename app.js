@@ -244,27 +244,12 @@
 
   function handleAuthResponse(resp) {
     if (resp.error) {
-      console.warn('Auth error / Silent refresh failed:', resp.error);
-      
-      const wasLoggedIn = localStorage.getItem('yt_explorer_is_logged_in') === 'true';
-
-      // If prompt 'none' failed, force manual login state
+      // Silent refresh failed or user cancelled; just show the login screen cleanly.
+      // Do NOT show error toast here - user just needs to click login.
+      console.warn('Auth response error:', resp.error);
       state.accessToken = null;
       localStorage.removeItem('yt_explorer_session');
       localStorage.setItem('yt_explorer_is_logged_in', 'false');
-
-      if (dom.btnLogin) {
-        const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
-        dom.btnLogin.innerHTML = originalSVG + (wasLoggedIn ? ' Sign in with Google (Session Expired)' : ' Sign in with Google');
-        dom.btnLogin.disabled = false;
-      }
-      
-      if (wasLoggedIn) {
-        showToast('Session expired. Please log in again.', 'error');
-      } else if (resp.error !== 'popup_closed_by_user' && resp.error !== 'access_denied') {
-        showToast('Google Sign-In Error: ' + resp.error, 'error');
-      }
-      
       show(dom.loginOverlay);
       hide(dom.app);
       return;
@@ -272,15 +257,15 @@
     state.accessToken = resp.access_token;
     localStorage.setItem('yt_explorer_is_logged_in', 'true');
 
-    // Persist session
-    const session = {
+    // Persist session with expiry
+    const expiresAt = Date.now() + (resp.expires_in || 3500) * 1000;
+    localStorage.setItem('yt_explorer_session', JSON.stringify({
       accessToken: resp.access_token,
-      // Default to slightly less than 1 hour to attempt refresh proactively
-      expiresAt: Date.now() + (resp.expires_in || 3500) * 1000, 
-    };
-    localStorage.setItem('yt_explorer_session', JSON.stringify(session));
+      expiresAt,
+    }));
 
-    setupTokenRefresh();
+    // Schedule a token refresh 5 min before expiry
+    setupTokenRefresh(expiresAt);
 
     hide(dom.loginOverlay);
     show(dom.app);
@@ -758,30 +743,38 @@
     }
   }
 
-  // Token auto-refresh logic
+  // Token auto-refresh — show login screen when token is about to expire,
+  // so user can click once to renew without losing where they are.
   let tokenRefreshTimer = null;
-  function setupTokenRefresh() {
+  function setupTokenRefresh(expiresAt) {
     if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
-
-    const raw = localStorage.getItem('yt_explorer_session');
-    if (!raw) return;
-    
-    try {
-      const session = JSON.parse(raw);
-      const timeUntilExpiry = session.expiresAt - Date.now();
-      
-      // Refresh 5 minutes before expiry, or immediately if already expired/close to expiry
-      const refreshDelay = Math.max(0, timeUntilExpiry - (5 * 60 * 1000));
-      
-      tokenRefreshTimer = setTimeout(() => {
-        if (tokenClient) {
-          console.log('Silently refreshing Google token...');
-          tokenClient.requestAccessToken({ prompt: 'none' });
-        }
-      }, refreshDelay);
-    } catch(e) {
-      console.error('Failed to setup token refresh:', e);
+    if (!expiresAt) {
+      try {
+        const raw = localStorage.getItem('yt_explorer_session');
+        if (raw) expiresAt = JSON.parse(raw).expiresAt;
+      } catch(e) {}
     }
+    if (!expiresAt) return;
+    
+    const timeUntilExpiry = expiresAt - Date.now();
+    // Warn the user 5 minutes before the token expires so they can re-login
+    const warnAt = Math.max(0, timeUntilExpiry - 5 * 60 * 1000);
+    
+    tokenRefreshTimer = setTimeout(() => {
+      // Token is about to expire — show a subtle toast, let user click login to renew
+      showToast('Your session will expire soon. Click "Sign in" to renew.', 'error');
+      // After another 5 minutes, force logout
+      setTimeout(() => {
+        if (state.accessToken) {
+          state.accessToken = null;
+          localStorage.removeItem('yt_explorer_session');
+          localStorage.setItem('yt_explorer_is_logged_in', 'false');
+          show(dom.loginOverlay);
+          hide(dom.app);
+          showToast('Session expired. Please sign in again to continue.', 'error');
+        }
+      }, 5 * 60 * 1000);
+    }, warnAt);
   }
 
   function applyFilters() {
@@ -1368,7 +1361,10 @@
       const session = JSON.parse(raw);
       
       if (Date.now() > session.expiresAt) {
-        return 'expired'; 
+        // Token expired; clean up and show login
+        localStorage.removeItem('yt_explorer_session');
+        localStorage.setItem('yt_explorer_is_logged_in', 'false');
+        return false;
       }
       
       state.accessToken = session.accessToken;
@@ -1382,39 +1378,23 @@
   function init() {
     bindEvents();
 
-    const isLoggedInUser = localStorage.getItem('yt_explorer_is_logged_in') === 'true';
     const restored = tryRestoreSession();
 
-    if (isLoggedInUser && restored !== true) {
-        dom.btnLogin.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;border-top-color:#fff;"></div> Restoring session...';
-        dom.btnLogin.disabled = true;
-    } else if (restored === true) {
-        hide(dom.loginOverlay);
-        show(dom.app);
-        fetchUserInfo();
-        fetchPlaylists();
-        setupTokenRefresh();
+    if (restored === true) {
+      // Valid token — show the app immediately
+      hide(dom.loginOverlay);
+      show(dom.app);
+      fetchUserInfo();
+      fetchPlaylists();
+      setupTokenRefresh();
     }
+    // else: show login screen (default state)
 
+    // Load Google Identity Services
     const checkGIS = setInterval(() => {
       if (typeof google !== 'undefined' && google.accounts?.oauth2) {
         clearInterval(checkGIS);
         initAuth();
-
-        if (isLoggedInUser && restored !== true) {
-           tokenClient.requestAccessToken({ prompt: 'none' });
-           
-           setTimeout(() => {
-             if (!state.accessToken) {
-               const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
-               dom.btnLogin.innerHTML = originalSVG + ' Sign in with Google';
-               dom.btnLogin.disabled = false;
-               show(dom.loginOverlay);
-               hide(dom.app);
-               localStorage.setItem('yt_explorer_is_logged_in', 'false');
-             }
-           }, 5000);
-        }
       }
     }, 100);
   }
