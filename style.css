@@ -510,6 +510,88 @@ body {
   color: var(--text-muted);
 }
 
+.player-panel {
+  margin: 0 0 22px;
+  background:
+    radial-gradient(circle at top left, rgba(255, 71, 87, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)),
+    var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+
+.player-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
+}
+
+.player-stage {
+  background: #000;
+  min-height: 320px;
+}
+
+.player-embed {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+.player-embed iframe {
+  width: 100%;
+  height: 100%;
+}
+
+.player-details {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px;
+}
+
+.player-kicker {
+  margin-bottom: 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.player-title {
+  font-size: 1.2rem;
+  line-height: 1.3;
+  margin-bottom: 10px;
+}
+
+.player-meta,
+.player-progress {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.player-progress {
+  margin-top: 10px;
+  color: var(--text-primary);
+}
+
+.player-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.player-btn-secondary {
+  background: rgba(255,255,255,0.08);
+  color: var(--text-primary);
+}
+
+.player-btn-secondary:hover {
+  background: rgba(255,255,255,0.12);
+}
+
 /* ---------- VIDEO GRID ---------- */
 .video-grid {
   display: grid;
@@ -558,6 +640,21 @@ body {
   padding: 2px 7px;
   border-radius: 4px;
   letter-spacing: 0.03em;
+}
+
+.video-progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(255,255,255,0.18);
+}
+
+.video-progress-track span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ff4757 0%, #ff7b54 100%);
 }
 
 .video-info { padding: 14px 16px 16px; }
@@ -618,6 +715,12 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.video-resume-note {
+  margin-top: 8px;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
 }
 
 .btn-tag-video {
@@ -867,6 +970,9 @@ body {
   .filter-section-sort { margin-left: 0; }
   .video-grid { grid-template-columns: 1fr; }
   .top-bar { padding: 0 12px; gap: 8px; }
+  .player-shell { grid-template-columns: 1fr; }
+  .player-stage { min-height: 220px; }
+  .player-details { padding: 16px; }
   /* Extra bottom padding to account for mobile nav */
   .main-content { padding: 16px 12px 100px; }
   .sidebar { padding-bottom: 80px; }

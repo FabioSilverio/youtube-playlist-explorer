@@ -17,7 +17,7 @@
     isLoading: false,
 
     // Filters & Search
-    searchMode: 'filter', // 'filter' | 'youtube'
+    searchMode: 'filter', // 'filter' | 'youtube' | 'continue'
     ytSearchResults: [],
     searchQuery: '',
     durationFilter: 'all',
@@ -42,6 +42,15 @@
 
     // Custom Video Tags { "videoId": ["tag1", "tag2"] }
     videoTags: JSON.parse(localStorage.getItem('yt_explorer_tags') || '{}'),
+
+    // Continue Watching state
+    continueWatching: JSON.parse(localStorage.getItem('yt_explorer_continue') || '{}'),
+    activeVideo: null,
+    currentPlayerVideoId: null,
+    player: null,
+    playerApiReady: false,
+    pendingPlayerVideo: null,
+    playerProgressTimer: null,
 
     isInitialLoad: true, // track startup check
   };
@@ -92,9 +101,18 @@
     btnClearFilters: $('#btn-clear-filters'),
 
     resultsCount: $('#results-count'),
+    playerPanel: $('#player-panel'),
+    playerMount: $('#youtube-player'),
+    playerTitle: $('#player-title'),
+    playerMeta: $('#player-meta'),
+    playerProgress: $('#player-progress'),
+    btnOpenYoutube: $('#btn-open-youtube'),
+    btnClosePlayer: $('#btn-close-player'),
     videoGrid: $('#video-grid'),
     loadingSpinner: $('#loading-spinner'),
     emptyState: $('#empty-state'),
+    emptyStateTitle: $('#empty-state-title'),
+    emptyStateText: $('#empty-state-text'),
     welcomeState: $('#welcome-state'),
     loadMoreWrapper: $('#load-more-wrapper'),
     btnLoadMore: $('#btn-load-more'),
@@ -187,8 +205,18 @@
       state.watchedVideos.delete(videoId);
     } else {
       state.watchedVideos.add(videoId);
+      if (state.continueWatching[videoId]) {
+        delete state.continueWatching[videoId];
+        persistContinueWatching();
+        renderPlaylists();
+        if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+          state.allVideos = getContinueWatchingVideos();
+          state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+          renderCategoryChips();
+        }
+      }
     }
-    localStorage.setItem('yt_explorer_watched', JSON.stringify([...state.watchedVideos]));
+    persistWatchedVideos();
   }
 
   function show(el) { el.classList.remove('hidden'); }
@@ -216,6 +244,226 @@
     return tagString.split(',')
       .map(t => t.trim().toLowerCase())
       .filter(t => t.length > 0);
+  }
+
+  function saveContinueProgress(video, progressSeconds) {
+    if (!video || !video.id) return;
+
+    const duration = video.duration || 0;
+    const seconds = Math.max(0, Math.floor(progressSeconds || 0));
+    const existing = state.continueWatching[video.id];
+
+    if (duration && seconds >= Math.max(duration - 15, duration * 0.95)) {
+      delete state.continueWatching[video.id];
+      state.watchedVideos.add(video.id);
+      persistWatchedVideos();
+      persistContinueWatching();
+      renderPlaylists();
+      if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+        state.allVideos = getContinueWatchingVideos();
+        state.detectedCategories = new Set(state.allVideos.map((entry) => entry.category).filter(Boolean));
+        renderCategoryChips();
+        applyFilters();
+      }
+      return;
+    }
+
+    if (seconds < 5 && !existing) return;
+
+    state.continueWatching[video.id] = {
+      ...existing,
+      ...video,
+      durationFormatted: video.durationFormatted || formatDuration(duration),
+      progressSeconds: seconds,
+      lastPlayedAt: Date.now(),
+    };
+
+    persistContinueWatching();
+
+    if (!existing) {
+      renderPlaylists();
+    }
+
+    if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+      state.allVideos = getContinueWatchingVideos();
+      state.detectedCategories = new Set(state.allVideos.map((entry) => entry.category).filter(Boolean));
+    }
+  }
+
+  function stopPlayerProgressTracking() {
+    if (state.playerProgressTimer) {
+      clearInterval(state.playerProgressTimer);
+      state.playerProgressTimer = null;
+    }
+  }
+
+  function syncPlayerProgress() {
+    if (!state.player || !state.activeVideo) return;
+
+    try {
+      const currentTime = state.player.getCurrentTime ? state.player.getCurrentTime() : 0;
+      const duration = state.player.getDuration ? state.player.getDuration() : state.activeVideo.duration || 0;
+
+      if (duration && !state.activeVideo.duration) {
+        state.activeVideo.duration = duration;
+        state.activeVideo.durationFormatted = formatDuration(duration);
+      }
+
+      saveContinueProgress(state.activeVideo, currentTime);
+
+      const progressEntry = getResumeEntry(state.activeVideo.id);
+      if (progressEntry) {
+        dom.playerProgress.textContent = formatResumeLabel(progressEntry.progressSeconds, duration || state.activeVideo.duration);
+      } else if (state.watchedVideos.has(state.activeVideo.id)) {
+        dom.playerProgress.textContent = 'Finished just now';
+      } else {
+        dom.playerProgress.textContent = '';
+      }
+    } catch (error) {
+      console.warn('Unable to sync player progress.', error);
+    }
+  }
+
+  function startPlayerProgressTracking() {
+    stopPlayerProgressTracking();
+    state.playerProgressTimer = setInterval(syncPlayerProgress, 5000);
+  }
+
+  function handlePlayerStateChange(event) {
+    const playerState = window.YT?.PlayerState;
+    if (!playerState) return;
+
+    if (event.data === playerState.PLAYING) {
+      startPlayerProgressTracking();
+    } else if (event.data === playerState.PAUSED || event.data === playerState.BUFFERING) {
+      syncPlayerProgress();
+    } else if (event.data === playerState.ENDED) {
+      syncPlayerProgress();
+      stopPlayerProgressTracking();
+    }
+  }
+
+  function closePlayer() {
+    syncPlayerProgress();
+    stopPlayerProgressTracking();
+    if (state.player?.stopVideo) {
+      state.player.stopVideo();
+    }
+    hide(dom.playerPanel);
+  }
+
+  function ensurePlayerApi() {
+    if (window.YT?.Player) {
+      state.playerApiReady = true;
+      return;
+    }
+
+    if (!window.onYouTubeIframeAPIReady) {
+      window.onYouTubeIframeAPIReady = () => {
+        state.playerApiReady = true;
+        if (state.pendingPlayerVideo) {
+          const pending = state.pendingPlayerVideo;
+          state.pendingPlayerVideo = null;
+          openInlinePlayer(pending);
+        }
+      };
+    }
+
+    if (!document.querySelector('script[data-yt-api="true"]')) {
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.dataset.ytApi = 'true';
+      document.head.appendChild(script);
+    }
+  }
+
+  function openInlinePlayer(video) {
+    if (!video) return;
+
+    state.activeVideo = { ...video };
+    show(dom.playerPanel);
+    dom.playerTitle.textContent = video.title;
+    dom.playerMeta.textContent = [video.channel, video.category, video.durationFormatted].filter(Boolean).join(' • ');
+
+    const resumeEntry = getResumeEntry(video.id);
+    dom.playerProgress.textContent = resumeEntry
+      ? formatResumeLabel(resumeEntry.progressSeconds, video.duration)
+      : 'Starting from the beginning';
+
+    ensurePlayerApi();
+    if (!state.playerApiReady || !window.YT?.Player) {
+      state.pendingPlayerVideo = video;
+      return;
+    }
+
+    const startSeconds = resumeEntry?.progressSeconds || 0;
+    state.currentPlayerVideoId = video.id;
+
+    if (!state.player) {
+      state.player = new window.YT.Player(dom.playerMount, {
+        videoId: video.id,
+        playerVars: {
+          autoplay: 1,
+          modestbranding: 1,
+          rel: 0,
+          playsinline: 1,
+          start: startSeconds,
+        },
+        events: {
+          onReady: () => {
+            if (startSeconds > 0) {
+              state.player.seekTo(startSeconds, true);
+            }
+            state.player.playVideo();
+            startPlayerProgressTracking();
+          },
+          onStateChange: handlePlayerStateChange,
+        },
+      });
+    } else {
+      state.player.loadVideoById({
+        videoId: video.id,
+        startSeconds,
+      });
+      startPlayerProgressTracking();
+    }
+
+    dom.playerPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function persistWatchedVideos() {
+    localStorage.setItem('yt_explorer_watched', JSON.stringify([...state.watchedVideos]));
+  }
+
+  function persistContinueWatching() {
+    localStorage.setItem('yt_explorer_continue', JSON.stringify(state.continueWatching));
+  }
+
+  function getContinueWatchingVideos() {
+    return Object.values(state.continueWatching)
+      .filter((video) => (video.progressSeconds || 0) > 0)
+      .sort((a, b) => (b.lastPlayedAt || 0) - (a.lastPlayedAt || 0));
+  }
+
+  function getResumeEntry(videoId) {
+    return state.continueWatching[videoId] || null;
+  }
+
+  function getResumePercent(video, resumeEntry = getResumeEntry(video.id)) {
+    if (!resumeEntry || !video.duration) return 0;
+    return Math.max(0, Math.min(100, (resumeEntry.progressSeconds / video.duration) * 100));
+  }
+
+  function formatResumeLabel(progressSeconds, durationSeconds) {
+    const current = formatDuration(Math.max(0, Math.floor(progressSeconds || 0)));
+    if (!durationSeconds) return `Continue from ${current}`;
+    return `Continue from ${current} of ${formatDuration(Math.floor(durationSeconds))}`;
+  }
+
+  function updateEmptyState(title, text) {
+    dom.emptyStateTitle.textContent = title;
+    dom.emptyStateText.textContent = text;
   }
 
   // ---- Auth (Google Identity Services) ----
@@ -369,6 +617,7 @@
 
   function renderPlaylists() {
     dom.sidebarList.innerHTML = '';
+    const continueWatchingVideos = getContinueWatchingVideos();
 
     // Add "Discover YouTube" special entry
     const discoverItem = document.createElement('div');
@@ -384,6 +633,20 @@
     `;
     discoverItem.addEventListener('click', () => selectPlaylist('DISCOVER', discoverItem));
     dom.sidebarList.appendChild(discoverItem);
+
+    const continueItem = document.createElement('div');
+    continueItem.className = 'playlist-item' + (state.activePlaylistId === 'CONTINUE_WATCHING' ? ' active' : '');
+    continueItem.innerHTML = `
+      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+        <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+      </div>
+      <div class="playlist-meta">
+        <div class="playlist-title">Continue Watching</div>
+        <div class="playlist-video-count">${continueWatchingVideos.length > 0 ? `${continueWatchingVideos.length} in progress` : 'Resume where you left off'}</div>
+      </div>
+    `;
+    continueItem.addEventListener('click', () => selectPlaylist('CONTINUE_WATCHING', continueItem));
+    dom.sidebarList.appendChild(continueItem);
 
     // Add "Liked Videos" as a special entry
     const likedItem = document.createElement('div');
@@ -489,6 +752,15 @@
       if (dom.discoverInput.value.trim()) {
         performYoutubeSearch();
       }
+    } else if (playlistId === 'CONTINUE_WATCHING') {
+      state.searchMode = 'continue';
+      hide(dom.discoverBar);
+      show(dom.filterBar);
+      dom.filterBar.classList.remove('mobile-open');
+      state.allVideos = getContinueWatchingVideos();
+      state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+      renderCategoryChips();
+      applyFilters();
     } else {
       state.searchMode = 'filter';
       hide(dom.discoverBar);
@@ -812,7 +1084,7 @@
     let videos = state.searchMode === 'youtube' ? [...state.ytSearchResults] : [...state.allVideos];
 
     // Search (only if local filtering)
-    if (state.searchQuery && state.searchMode === 'filter') {
+    if (state.searchQuery && state.searchMode !== 'youtube') {
       const q = state.searchQuery.toLowerCase();
       videos = videos.filter((v) =>
         v.title.toLowerCase().includes(q) ||
@@ -900,7 +1172,24 @@
       }
     }
 
-    if (videos.length === 0 && (state.allVideos.length > 0 || state.searchMode === 'youtube')) {
+    const shouldShowEmpty = videos.length === 0 && (
+      state.allVideos.length > 0 ||
+      state.searchMode === 'youtube' ||
+      state.activePlaylistId === 'CONTINUE_WATCHING'
+    );
+
+    if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+      updateEmptyState(
+        shouldShowEmpty ? 'Nothing queued right now' : 'No videos found',
+        state.allVideos.length === 0
+          ? 'Start a video here and we will save your place automatically.'
+          : 'Try adjusting your filters or search terms.'
+      );
+    } else {
+      updateEmptyState('No videos found', 'Try adjusting your filters or search terms.');
+    }
+
+    if (shouldShowEmpty) {
       show(dom.emptyState);
     } else {
       hide(dom.emptyState);
@@ -927,11 +1216,23 @@
       const isWatched = state.watchedVideos.has(v.id);
       const customTags = state.videoTags[v.id] || [];
       const hasTags = customTags.length > 0;
+      const resumeEntry = getResumeEntry(v.id);
+      const resumePercent = getResumePercent(v, resumeEntry);
       
       const tagsHtml = hasTags 
         ? `<div class="video-tags-container">
             ${customTags.map(t => `<span class="video-custom-tag">${escHtml(t)}</span>`).join('')}
            </div>`
+        : '';
+      const progressHtml = resumeEntry && resumePercent > 0
+        ? `
+          <div class="video-progress-track">
+            <span style="width:${resumePercent.toFixed(2)}%"></span>
+          </div>
+        `
+        : '';
+      const resumeHtml = resumeEntry
+        ? `<div class="video-resume-note">${escHtml(formatResumeLabel(resumeEntry.progressSeconds, v.duration))}</div>`
         : '';
         
       const card = document.createElement('div');
@@ -945,7 +1246,8 @@
           <img class="video-thumb" src="${v.thumbnail}" alt="${escHtml(v.title)}" loading="lazy" />
           ${isWatched ? '<span class="watched-badge"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Watched</span>' : ''}
           <span class="video-duration-badge">${v.durationFormatted}</span>
-          ${state.searchMode === 'filter' 
+          ${progressHtml}
+          ${state.searchMode !== 'youtube' 
             ? `<button class="btn-mark-watched ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
                 <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
                </button>`
@@ -967,6 +1269,7 @@
             <span class="video-category-badge">${escHtml(v.category)}</span>
             ${v.isPodcast ? '<span class="video-category-badge" style="background:rgba(168,85,247,0.12);color:var(--purple);">Podcast</span>' : ''}
           </div>
+          ${resumeHtml}
           ${tagsHtml}
         </div>
       `;
@@ -976,13 +1279,13 @@
       const thumbWrap = card.querySelector('.video-thumb');
       const title = card.querySelector('.video-title');
       
-      const openVideo = () => window.open(`https://www.youtube.com/watch?v=${v.id}`, '_blank');
+      const openVideo = () => openInlinePlayer(v);
       playBtn.addEventListener('click', openVideo);
       thumbWrap.addEventListener('click', openVideo);
       title.addEventListener('click', openVideo);
 
       // Watched / Add toggle logic
-      if (state.searchMode === 'filter') {
+      if (state.searchMode !== 'youtube') {
         const watchBtn = card.querySelector('.btn-mark-watched');
         if (watchBtn) {
           watchBtn.addEventListener('click', (e) => {
@@ -1073,7 +1376,14 @@
 
   function setActiveChip(container, value) {
     container.querySelectorAll('.chip').forEach((c) => {
-      c.classList.toggle('active', c.dataset.duration === value || c.dataset.date === value || c.dataset.category === value);
+      c.classList.toggle(
+        'active',
+        c.dataset.duration === value ||
+        c.dataset.date === value ||
+        c.dataset.category === value ||
+        c.dataset.type === value ||
+        c.dataset.watched === value
+      );
     });
   }
 
@@ -1250,6 +1560,13 @@
         loadPlaylistVideos(state.nextPageToken);
       }
     });
+
+    dom.btnOpenYoutube.addEventListener('click', () => {
+      if (!state.activeVideo?.id) return;
+      window.open(`https://www.youtube.com/watch?v=${state.activeVideo.id}`, '_blank', 'noopener');
+    });
+
+    dom.btnClosePlayer.addEventListener('click', closePlayer);
 
     // Mobile nav
     dom.mobileNav.addEventListener('click', (e) => {
