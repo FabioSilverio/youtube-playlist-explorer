@@ -226,17 +226,30 @@
       callback: handleAuthResponse,
     });
 
+    // Invisible auto-login on any user interaction if they lost their token
+    document.addEventListener('click', (e) => {
+      if (localStorage.getItem('yt_explorer_is_logged_in') === 'true' && !state.accessToken) {
+         // Don't intercept clicks on the explicit login/logout
+         if (e.target.closest('#btn-login') || e.target.closest('#btn-logout')) return;
+         
+         console.log('Intercepting click to silently renew Google token...');
+         tokenClient.requestAccessToken({ prompt: '' });
+      }
+    }, true);
+
     dom.btnLogin.addEventListener('click', () => {
       tokenClient.requestAccessToken({ prompt: 'select_account' });
     });
 
     dom.btnLogout.addEventListener('click', () => {
-      google.accounts.oauth2.revoke(state.accessToken, () => {
-        state.accessToken = null;
-        localStorage.removeItem('yt_explorer_session');
-        show(dom.loginOverlay);
-        hide(dom.app);
-      });
+      if (state.accessToken) {
+        google.accounts.oauth2.revoke(state.accessToken, () => {});
+      }
+      state.accessToken = null;
+      localStorage.removeItem('yt_explorer_session');
+      localStorage.removeItem('yt_explorer_is_logged_in');
+      show(dom.loginOverlay);
+      hide(dom.app);
     });
   }
 
@@ -250,9 +263,11 @@
     // Persist session
     const session = {
       accessToken: resp.access_token,
-      expiresAt: Date.now() + (resp.expires_in || 3500) * 1000, // use 3500 to refresh slightly before 3600s
+      // Default to slightly less than 1 hour to attempt refresh proactively
+      expiresAt: Date.now() + (resp.expires_in || 3500) * 1000, 
     };
     localStorage.setItem('yt_explorer_session', JSON.stringify(session));
+    localStorage.setItem('yt_explorer_is_logged_in', 'true');
 
     setupTokenRefresh();
 
@@ -262,10 +277,21 @@
     fetchPlaylists();
   }
 
-  async function apiFetch(url) {
+  async function apiFetch(url, options = {}) {
+    if (!state.accessToken) {
+       throw new Error('No access token available.');
+    }
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${state.accessToken}` },
+      ...options,
+      headers: { Authorization: `Bearer ${state.accessToken}`, ...(options.headers || {}) },
     });
+    if (res.status === 401) {
+      // Token was rejected by Google as expired or invalid
+      console.warn("API returned 401 Unauthorized. Clearing local token.");
+      state.accessToken = null;
+      localStorage.removeItem('yt_explorer_session');
+      throw new Error(`API 401: Unauthorized`);
+    }
     if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
     return res.json();
   }
@@ -282,22 +308,27 @@
   }
 
   // ---- Playlists ----
-  async function fetchPlaylists(pageToken = '', isSilent = false) {
+  async function fetchPlaylists(pageToken = '', isSilent = false, tempPlaylists = null) {
     try {
-      if (!pageToken) {
-        state.playlists = []; // Clear on first page
+      if (!pageToken && !isSilent) {
+        state.playlists = []; // Clear on first page 
       }
+      
+      let targetArray = isSilent ? (tempPlaylists || []) : state.playlists;
       
       let url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
       const data = await apiFetch(url);
-      state.playlists.push(...data.items);
-      dom.playlistCount.textContent = state.playlists.length;
+      targetArray.push(...data.items);
 
       if (data.nextPageToken) {
-        await fetchPlaylists(data.nextPageToken, isSilent);
+        await fetchPlaylists(data.nextPageToken, isSilent, targetArray);
       } else {
+        if (isSilent && !pageToken) {
+          state.playlists = targetArray;
+        }
+        dom.playlistCount.textContent = state.playlists.length;
         renderPlaylists();
       }
     } catch (e) {
@@ -448,10 +479,15 @@
     }
 
     try {
-      if (!pageToken && isSilent) {
+      if (!pageToken && !isSilent) {
         state.allVideos = [];
         state.detectedCategories = new Set();
       }
+      
+      // If doing a silent refresh on videos, don't clear the array immediately
+      let targetArray = isSilent ? [] : state.allVideos;
+      let targetCats = isSilent ? new Set() : state.detectedCategories;
+
       let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${state.activePlaylistId}&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
@@ -488,7 +524,7 @@
           const vid = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
           const detail = videoDetails[vid];
           const catName = YT_CATEGORIES[detail.categoryId] || 'Other';
-          state.detectedCategories.add(catName);
+          targetCats.add(catName);
           
           const isPod = isPodcast(item.snippet.title, item.snippet.videoOwnerChannelTitle || '', detail.duration);
 
@@ -507,7 +543,13 @@
           };
         });
 
-      state.allVideos.push(...newVideos);
+      targetArray.push(...newVideos);
+
+      if (isSilent && !pageToken) {
+        // Swap new values once fetch completes so UI doesn't blank out
+        state.allVideos = targetArray;
+        state.detectedCategories = targetCats;
+      }
 
       // Update category chips
       renderCategoryChips();
@@ -687,13 +729,9 @@
     if (!state.accessToken) return;
     
     try {
-      // Refresh playlists
+      // ONLY refresh playlists silently to avoid replacing currently viewing videos
       await fetchPlaylists('', true);
       
-      // Refresh active playlist videos if applicable
-      if (state.activePlaylistId && state.activePlaylistId !== 'DISCOVER') {
-        await loadPlaylistVideos('', true);
-      }
     } catch (e) {
       console.error('Silent refresh failed:', e);
     }
@@ -1308,8 +1346,6 @@
       if (!raw) return false;
       const session = JSON.parse(raw);
       
-      // If token is expired, we don't clear it immediately anymore, 
-      // we let the GIS library attempt a silent refresh via prompt: 'none' in init()
       if (Date.now() > session.expiresAt) {
         return 'expired'; 
       }
@@ -1332,21 +1368,27 @@
 
     // Try to restore previous session first
     const restored = tryRestoreSession();
+    const isLoggedInUser = localStorage.getItem('yt_explorer_is_logged_in') === 'true';
 
-    // Wait for Google Identity Services to load (needed for new logins or token refresh)
+    if (isLoggedInUser && !restored) {
+        // Hide login overlay if they were previously logged in
+        // to prevent UI flashing. Their first click will trigger the seamless token refresh.
+        hide(dom.loginOverlay);
+        show(dom.app);
+    }
+
+    // Wait for Google Identity Services to load
     const checkGIS = setInterval(() => {
       if (typeof google !== 'undefined' && google.accounts?.oauth2) {
         clearInterval(checkGIS);
         initAuth();
 
-        // If session expired, set up silent re-auth
         if (restored === 'expired') {
+           // Attempt silent token refresh on loud. Will fail if 3rd-party cookies blocked, 
+           // but the global click interceptor will catch it on next click!
            tokenClient.requestAccessToken({ prompt: 'none' });
-        } else if (!restored && !state.accessToken) {
-          // User needs to click login manually
-        } else if (restored === true) {
-          // Setup 1-minute auto refresh of data if logged in
-          setInterval(silentRefresh, 60000);
+        } else if (!restored && !state.accessToken && isLoggedInUser) {
+           tokenClient.requestAccessToken({ prompt: 'none' });
         }
       }
     }, 100);
