@@ -250,9 +250,11 @@
     // Persist session
     const session = {
       accessToken: resp.access_token,
-      expiresAt: Date.now() + (resp.expires_in || 3600) * 1000,
+      expiresAt: Date.now() + (resp.expires_in || 3500) * 1000, // use 3500 to refresh slightly before 3600s
     };
     localStorage.setItem('yt_explorer_session', JSON.stringify(session));
+
+    setupTokenRefresh();
 
     hide(dom.loginOverlay);
     show(dom.app);
@@ -429,6 +431,7 @@
       state.searchMode = 'filter';
       hide(dom.discoverBar);
       show(dom.filterBar);
+      dom.filterBar.classList.remove('mobile-open'); // Close filters on mobile when switching playlists
       await loadPlaylistVideos();
     }
   }
@@ -693,6 +696,32 @@
       }
     } catch (e) {
       console.error('Silent refresh failed:', e);
+    }
+  }
+
+  // Token auto-refresh logic
+  let tokenRefreshTimer = null;
+  function setupTokenRefresh() {
+    if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+
+    const raw = localStorage.getItem('yt_explorer_session');
+    if (!raw) return;
+    
+    try {
+      const session = JSON.parse(raw);
+      const timeUntilExpiry = session.expiresAt - Date.now();
+      
+      // Refresh 5 minutes before expiry, or immediately if already expired/close to expiry
+      const refreshDelay = Math.max(0, timeUntilExpiry - (5 * 60 * 1000));
+      
+      tokenRefreshTimer = setTimeout(() => {
+        if (tokenClient) {
+          console.log('Silently refreshing Google token...');
+          tokenClient.requestAccessToken({ prompt: 'none' });
+        }
+      }, refreshDelay);
+    } catch(e) {
+      console.error('Failed to setup token refresh:', e);
     }
   }
 
@@ -1159,7 +1188,12 @@
       } else if (target === 'filters') {
         dom.sidebar.classList.remove('open');
         const filterEl = document.getElementById('filter-bar');
-        if (filterEl) filterEl.scrollIntoView({ behavior: 'smooth' });
+        if (filterEl) {
+          filterEl.classList.toggle('mobile-open');
+          if (filterEl.classList.contains('mobile-open')) {
+             filterEl.scrollIntoView({ behavior: 'smooth' });
+          }
+        }
       }
     });
     
@@ -1273,15 +1307,19 @@
       const raw = localStorage.getItem('yt_explorer_session');
       if (!raw) return false;
       const session = JSON.parse(raw);
-      if (!session.accessToken || Date.now() > session.expiresAt) {
-        localStorage.removeItem('yt_explorer_session');
-        return false;
+      
+      // If token is expired, we don't clear it immediately anymore, 
+      // we let the GIS library attempt a silent refresh via prompt: 'none' in init()
+      if (Date.now() > session.expiresAt) {
+        return 'expired'; 
       }
+      
       state.accessToken = session.accessToken;
       hide(dom.loginOverlay);
       show(dom.app);
       fetchUserInfo();
       fetchPlaylists();
+      setupTokenRefresh();
       return true;
     } catch {
       localStorage.removeItem('yt_explorer_session');
@@ -1302,10 +1340,12 @@
         initAuth();
 
         // If session expired, set up silent re-auth
-        if (!restored && !state.accessToken) {
-          // User needs to click login
-        } else if (restored) {
-          // Setup 1-minute auto refresh if logged in
+        if (restored === 'expired') {
+           tokenClient.requestAccessToken({ prompt: 'none' });
+        } else if (!restored && !state.accessToken) {
+          // User needs to click login manually
+        } else if (restored === true) {
+          // Setup 1-minute auto refresh of data if logged in
           setInterval(silentRefresh, 60000);
         }
       }

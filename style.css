@@ -854,7 +854,16 @@ body {
 @media (max-width: 640px) {
   .search-wrapper { max-width: none; }
   .brand-text { display: none; }
-  .filter-bar { flex-direction: column; }
+  
+  .filter-bar { 
+    display: none; 
+    flex-direction: column; 
+  }
+  .filter-bar.mobile-open {
+    display: flex;
+    animation: slideDown 0.3s ease;
+  }
+  
   .filter-section-sort { margin-left: 0; }
   .video-grid { grid-template-columns: 1fr; }
   .top-bar { padding: 0 12px; gap: 8px; }
