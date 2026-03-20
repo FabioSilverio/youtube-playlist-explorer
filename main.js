@@ -23,19 +23,20 @@
   ];
 
   const DEFAULT_NEWS_CHANNELS = [
-    { id: '', title: 'CNN', handle: '@CNN', group: 'US News' },
-    { id: '', title: 'MSNBC', handle: '@msnbc', group: 'US News' },
-    { id: '', title: 'Fox News', handle: '@FoxNews', group: 'US News' },
-    { id: '', title: 'Newsmax', handle: '@NewsmaxTV', group: 'US News' },
-    { id: '', title: 'NewsNation', handle: '@NewsNation', group: 'US News' },
-    { id: '', title: 'NBC News', handle: '@NBCNews', group: 'US News' },
-    { id: '', title: 'ABC News', handle: '@ABCNews', group: 'US News' },
-    { id: '', title: 'CBS News', handle: '@CBSNews', group: 'US News' },
-    { id: '', title: 'Reuters', handle: '@Reuters', group: 'US News' },
-    { id: '', title: 'Associated Press', handle: '@AssociatedPress', group: 'US News' },
-    { id: '', title: 'BBC News', handle: '@BBCNews', group: 'UK News' },
-    { id: '', title: 'Sky News', handle: '@SkyNews', group: 'UK News' },
-    { id: '', title: 'Channel 4 News', handle: '@Channel4News', group: 'UK News' },
+    { id: 'UCupvZG-5ko_eiXAupbDfxWw', title: 'CNN', handle: '@CNN', group: 'US News' },
+    { id: 'UCx1ns8xAB6urN7dUGvEeBcA', title: 'MSNBC Daily', handle: '@MSNBCDaily', group: 'US News' },
+    { id: 'UCgncrYds4_eNREevtYhAqkQ', title: 'MSNBC Live', handle: '@MSNBCLive', group: 'US News' },
+    { id: 'UCXIJgqnII2ZOINSWNOGFThA', title: 'Fox News', handle: '@FoxNews', group: 'US News' },
+    { id: 'UCx6h-dWzJ5NpAlja1YsApdg', title: 'Newsmax', handle: '@NewsmaxTV', group: 'US News' },
+    { id: 'UCCjG8NtOig0USdrT5D1FpxQ', title: 'NewsNation', handle: '@NewsNation', group: 'US News' },
+    { id: 'UCeY0bbntWzzVIaj2z3QigXg', title: 'NBC News', handle: '@NBCNews', group: 'US News' },
+    { id: 'UCBi2mrWuNuyYy4gbM6fU18Q', title: 'ABC News', handle: '@ABCNews', group: 'US News' },
+    { id: 'UC8p1vwvWtl6T73JiExfWs1g', title: 'CBS News', handle: '@CBSNews', group: 'US News' },
+    { id: 'UChqUTb7kYRX8-EiaN3XFrSQ', title: 'Reuters', handle: '@Reuters', group: 'US News' },
+    { id: 'UC52X5wxOL_s5yw0dQk7NtgA', title: 'Associated Press', handle: '@AssociatedPress', group: 'US News' },
+    { id: 'UC16niRr50-MSBwiO3YDb3RA', title: 'BBC News', handle: '@BBCNews', group: 'UK News' },
+    { id: 'UCoMdktPbSTixAyNGwb-UYkQ', title: 'Sky News', handle: '@SkyNews', group: 'UK News' },
+    { id: 'UCTrQ7HXWRRxr7OsOtodr2_w', title: 'Channel 4 News', handle: '@Channel4News', group: 'UK News' },
   ];
 
   const NEWS_SHOW_PATTERNS = [
@@ -95,9 +96,14 @@
           const merged = new Map(DEFAULT_NEWS_CHANNELS.map((channel) => [channel.handle, { ...channel }]));
           parsed.forEach((channel) => {
             const key = channel.handle || `${channel.title}-${channel.group}`;
+            const existing = merged.get(key) || {};
             merged.set(key, {
-              ...(merged.get(key) || {}),
+              ...existing,
               ...channel,
+              id: channel.id || existing.id || '',
+              title: channel.title || existing.title || '',
+              handle: channel.handle || existing.handle || '',
+              group: channel.group || existing.group || 'US News',
             });
           });
           const normalized = [...merged.values()];
