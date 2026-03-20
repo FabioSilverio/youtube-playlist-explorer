@@ -874,6 +874,30 @@
     }
   }
 
+  function clearTrackedNotifications(group = 'All') {
+    markTrackedGroupSeen(group);
+    recalculateTrackedNewCounts(state.trackedFeedVideos, state.trackedSeenAt);
+    renderPlaylists();
+
+    if (state.activePlaylistId === 'TRACKED_FEED') {
+      applyFilters();
+    }
+
+    showToast(group === 'All' ? 'Tracked feed notifications cleared.' : `${group} notifications cleared.`);
+  }
+
+  function clearNewsNotifications(group = 'All') {
+    markNewsGroupSeen(group);
+    recalculateNewsNewCounts(state.newsFeedVideos, state.newsSeenAt);
+    renderPlaylists();
+
+    if (state.activePlaylistId === 'NEWS_FEED') {
+      applyFilters();
+    }
+
+    showToast(group === 'All' ? 'News feed notifications cleared.' : `${group} notifications cleared.`);
+  }
+
   function normalizeChannelReference(input) {
     const trimmed = input.trim();
     if (!trimmed) {
@@ -1604,7 +1628,12 @@
       </div>
       ${totalTrackedNew > 0 ? `<span class="feed-count-badge">${totalTrackedNew}</span>` : ''}
     `;
+    trackedItem.title = 'Right-click to clear new upload badges';
     trackedItem.addEventListener('click', () => selectTrackedFeedGroup('All', trackedItem));
+    trackedItem.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      clearTrackedNotifications('All');
+    });
     dom.sidebarList.appendChild(trackedItem);
 
     trackedGroups
@@ -1619,7 +1648,12 @@
           </div>
           ${(state.trackedNewCounts[group] || 0) > 0 ? `<span class="feed-count-badge">${state.trackedNewCounts[group]}</span>` : ''}
         `;
+        groupItem.title = 'Right-click to clear new upload badges';
         groupItem.addEventListener('click', () => selectTrackedFeedGroup(group, groupItem));
+        groupItem.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          clearTrackedNotifications(group);
+        });
         dom.sidebarList.appendChild(groupItem);
       });
 
@@ -1635,7 +1669,12 @@
       </div>
       ${totalNewsNew > 0 ? `<span class="feed-count-badge">${totalNewsNew}</span>` : ''}
     `;
+    newsItem.title = 'Right-click to clear new upload badges';
     newsItem.addEventListener('click', () => selectNewsFeedGroup('All', newsItem));
+    newsItem.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      clearNewsNotifications('All');
+    });
     dom.sidebarList.appendChild(newsItem);
 
     newsGroups
@@ -1654,7 +1693,12 @@
           </div>
           ${(state.newsNewCounts[group] || 0) > 0 ? `<span class="feed-count-badge">${state.newsNewCounts[group]}</span>` : ''}
         `;
+        groupItem.title = 'Right-click to clear new upload badges';
         groupItem.addEventListener('click', () => selectNewsFeedGroup(group, groupItem));
+        groupItem.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          clearNewsNotifications(group);
+        });
         dom.sidebarList.appendChild(groupItem);
       });
 
@@ -1976,24 +2020,43 @@
     dom.modalPlaylistList.innerHTML = '';
     
     const validPlaylists = state.playlists.filter(p => p.id !== 'LL');
-    
+
+    const appendPlaylistOption = (playlistId, title, thumb = '', isQuickSave = false) => {
+      const item = document.createElement('div');
+      item.className = 'modal-playlist-item' + (isQuickSave ? ' modal-playlist-item-quick' : '');
+      item.innerHTML = `
+        ${thumb
+          ? `<img class="modal-playlist-thumb" src="${thumb}" alt="" />`
+          : `<div class="modal-playlist-icon" aria-hidden="true">
+               <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+             </div>`
+        }
+        <div class="modal-playlist-copy">
+          <span class="modal-playlist-title">${escHtml(title)}</span>
+          ${isQuickSave ? '<span class="modal-playlist-subtitle">Quick save</span>' : ''}
+        </div>
+      `;
+      item.addEventListener('click', () => {
+        hide(dom.playlistModal);
+        const tagsStr = dom.playlistModalTags.value;
+        addToPlaylist(videoId, playlistId, btnEl, tagsStr);
+      });
+      dom.modalPlaylistList.appendChild(item);
+    };
+
+    appendPlaylistOption('WL', 'Watch Later', '', true);
+
     if (validPlaylists.length === 0) {
-      dom.modalPlaylistList.innerHTML = '<p style="color:var(--text-muted);font-size:0.9rem;">You don\'t have any playlists to add to.</p>';
+      const empty = document.createElement('p');
+      empty.style.color = 'var(--text-muted)';
+      empty.style.fontSize = '0.9rem';
+      empty.style.marginTop = '10px';
+      empty.textContent = 'No personal playlists found yet, but you can still save to Watch Later.';
+      dom.modalPlaylistList.appendChild(empty);
     } else {
       validPlaylists.forEach(pl => {
         const thumb = pl.snippet.thumbnails?.medium?.url || pl.snippet.thumbnails?.default?.url || '';
-        const item = document.createElement('div');
-        item.className = 'modal-playlist-item';
-        item.innerHTML = `
-          <img class="modal-playlist-thumb" src="${thumb}" alt="" />
-          <span class="modal-playlist-title">${escHtml(pl.snippet.title)}</span>
-        `;
-        item.addEventListener('click', () => {
-          hide(dom.playlistModal);
-          const tagsStr = dom.playlistModalTags.value;
-          addToPlaylist(videoId, pl.id, btnEl, tagsStr);
-        });
-        dom.modalPlaylistList.appendChild(item);
+        appendPlaylistOption(pl.id, pl.snippet.title, thumb);
       });
     }
     
@@ -2028,8 +2091,8 @@
         throw new Error(await res.text());
       }
       
-      showToast('Added to playlist successfully!');
-      btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Added';
+      showToast(playlistId === 'WL' ? 'Saved to Watch Later!' : 'Added to playlist successfully!');
+      btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Saved';
       btnEl.style.background = 'var(--green)';
 
       // Process tags if provided
@@ -2044,7 +2107,7 @@
       
     } catch (e) {
       console.error('Error adding to playlist:', e);
-      showToast('Failed to add video. Make sure you have permission.', 'error');
+      showToast(playlistId === 'WL' ? 'Failed to save to Watch Later.' : 'Failed to add video. Make sure you have permission.', 'error');
       btnEl.innerHTML = originalText;
       btnEl.disabled = false;
     }
@@ -2258,7 +2321,7 @@
       const hasTags = customTags.length > 0;
       const resumeEntry = getResumeEntry(v.id);
       const resumePercent = getResumePercent(v, resumeEntry);
-      const isNewTrackedVideo = isTrackedVideoNew(v);
+      const isNewVideo = isTrackedVideoNew(v) || isNewsVideoNew(v);
       const newsProgramHtml = v.newsProgram
         ? `<div class="video-news-program">${escHtml(v.newsProgram)}</div>`
         : '';
@@ -2288,17 +2351,18 @@
             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z M7 7h.01"/></svg>
           </button>
           <img class="video-thumb" src="${v.thumbnail}" alt="${escHtml(v.title)}" loading="lazy" />
-          ${isNewTrackedVideo ? '<span class="video-new-badge">New</span>' : ''}
+          ${isNewVideo ? '<span class="video-new-badge">New</span>' : ''}
           ${isWatched ? '<span class="watched-badge"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Watched</span>' : ''}
           <span class="video-duration-badge">${v.durationFormatted}</span>
           ${progressHtml}
+          <button class="btn-add-playlist" data-vid="${v.id}" title="Save to playlist">
+            <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Save
+          </button>
           ${state.searchMode !== 'youtube' 
-            ? `<button class="btn-mark-watched ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
+            ? `<button class="btn-mark-watched with-save ${isWatched ? 'is-watched' : ''}" title="Mark as ${isWatched ? 'Unwatched' : 'Watched'}">
                 <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>
                </button>`
-            : `<button class="btn-add-playlist" data-vid="${v.id}" title="Add to Playlist">
-                 <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Add
-               </button>`
+            : ''
           }
           <div class="video-play-overlay">
             <div class="play-btn-circle">
@@ -2340,14 +2404,14 @@
             applyFilters(); 
           });
         }
-      } else {
-        const addBtn = card.querySelector('.btn-add-playlist');
-        if (addBtn) {
-          addBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openPlaylistModal(v.id, addBtn);
-          });
-        }
+      }
+
+      const addBtn = card.querySelector('.btn-add-playlist');
+      if (addBtn) {
+        addBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openPlaylistModal(v.id, addBtn);
+        });
       }
 
       // Tag Video Logic
