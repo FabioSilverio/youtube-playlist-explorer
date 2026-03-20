@@ -22,6 +22,53 @@
     { id: 'UCNer6UYFzkD7n3JhE4vgjFQ', title: 'DGG_Clips', handle: '@DGG_Clips', group: 'Destiny' },
   ];
 
+  const DEFAULT_NEWS_CHANNELS = [
+    { id: '', title: 'CNN', handle: '@CNN', group: 'US News' },
+    { id: '', title: 'MSNBC', handle: '@msnbc', group: 'US News' },
+    { id: '', title: 'Fox News', handle: '@FoxNews', group: 'US News' },
+    { id: '', title: 'Newsmax', handle: '@NewsmaxTV', group: 'US News' },
+    { id: '', title: 'NewsNation', handle: '@NewsNation', group: 'US News' },
+    { id: '', title: 'NBC News', handle: '@NBCNews', group: 'US News' },
+    { id: '', title: 'ABC News', handle: '@ABCNews', group: 'US News' },
+    { id: '', title: 'CBS News', handle: '@CBSNews', group: 'US News' },
+    { id: '', title: 'Reuters', handle: '@Reuters', group: 'US News' },
+    { id: '', title: 'Associated Press', handle: '@AssociatedPress', group: 'US News' },
+    { id: '', title: 'BBC News', handle: '@BBCNews', group: 'UK News' },
+    { id: '', title: 'Sky News', handle: '@SkyNews', group: 'UK News' },
+    { id: '', title: 'Channel 4 News', handle: '@Channel4News', group: 'UK News' },
+  ];
+
+  const NEWS_SHOW_PATTERNS = [
+    { program: 'Anderson Cooper 360', matches: ['anderson cooper 360'] },
+    { program: 'The Lead', matches: ['the lead with jake tapper', 'the lead'] },
+    { program: 'Erin Burnett OutFront', matches: ['erin burnett outfront', 'outfront'] },
+    { program: 'State of the Union', matches: ['state of the union'] },
+    { program: 'Fareed Zakaria GPS', matches: ['fareed zakaria gps'] },
+    { program: 'Morning Joe', matches: ['morning joe'] },
+    { program: 'The Beat With Ari Melber', matches: ['the beat with ari melber', 'the beat'] },
+    { program: 'All In With Chris Hayes', matches: ['all in with chris hayes', 'all in'] },
+    { program: 'Deadline: White House', matches: ['deadline: white house', 'deadline white house'] },
+    { program: 'The Last Word', matches: ['the last word'] },
+    { program: 'The Five', matches: ['the five'] },
+    { program: 'Jesse Watters Primetime', matches: ['jesse watters primetime'] },
+    { program: 'Hannity', matches: ['hannity'] },
+    { program: 'Gutfeld!', matches: ['gutfeld'] },
+    { program: 'The Ingraham Angle', matches: ['the ingraham angle'] },
+    { program: 'Special Report', matches: ['special report'] },
+    { program: 'America\'s Newsroom', matches: ['america\'s newsroom', 'americas newsroom'] },
+    { program: 'Greg Kelly Reports', matches: ['greg kelly reports'] },
+    { program: 'Rob Schmitt Tonight', matches: ['rob schmitt tonight'] },
+    { program: 'Wake Up America', matches: ['wake up america'] },
+    { program: 'Cuomo', matches: ['cuomo'] },
+    { program: 'On Balance', matches: ['on balance'] },
+    { program: 'Dan Abrams Live', matches: ['dan abrams live'] },
+    { program: 'Morning in America', matches: ['morning in america'] },
+    { program: 'BBC Newsnight', matches: ['newsnight'] },
+    { program: 'BBC Verify', matches: ['bbc verify'] },
+    { program: 'Politics Hub', matches: ['politics hub'] },
+    { program: 'The World With Yalda Hakim', matches: ['the world with yalda hakim'] },
+  ];
+
   function getInitialTrackedChannels() {
     try {
       const raw = localStorage.getItem('yt_explorer_tracked_channels');
@@ -39,6 +86,23 @@
     return DEFAULT_TRACKED_CHANNELS.map((channel) => ({ ...channel }));
   }
 
+  function getInitialNewsChannels() {
+    try {
+      const raw = localStorage.getItem('yt_explorer_news_channels');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (error) {
+      console.warn('Unable to read news channels from storage.', error);
+    }
+
+    localStorage.setItem('yt_explorer_news_channels', JSON.stringify(DEFAULT_NEWS_CHANNELS));
+    return DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
+  }
+
   function getInitialTrackedSeenAt() {
     const defaults = { All: 0, Hasan: 0, Destiny: 0, Custom: 0 };
     try {
@@ -50,6 +114,25 @@
       console.warn('Unable to read tracked seen timestamps.', error);
       return defaults;
     }
+  }
+
+  function getInitialNewsSeenAt() {
+    const defaults = { All: 0, 'US News': 0, 'UK News': 0, 'Program Clips': 0 };
+    try {
+      const raw = localStorage.getItem('yt_explorer_news_seen_at');
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return { ...defaults, ...(parsed || {}) };
+    } catch (error) {
+      console.warn('Unable to read news seen timestamps.', error);
+      return defaults;
+    }
+  }
+
+  function detectNewsProgram(title = '') {
+    const normalizedTitle = title.toLowerCase();
+    const matched = NEWS_SHOW_PATTERNS.find((entry) => entry.matches.some((pattern) => normalizedTitle.includes(pattern)));
+    return matched ? matched.program : '';
   }
 
   // ---- State ----
@@ -95,6 +178,14 @@
     trackedSeenAt: getInitialTrackedSeenAt(),
     trackedSeenBaseline: { All: 0, Hasan: 0, Destiny: 0, Custom: 0 },
     trackedNewCounts: { All: 0, Hasan: 0, Destiny: 0, Custom: 0 },
+
+    // News feed
+    newsChannels: getInitialNewsChannels(),
+    newsFeedVideos: [],
+    activeNewsGroup: 'All',
+    newsSeenAt: getInitialNewsSeenAt(),
+    newsSeenBaseline: { All: 0, 'US News': 0, 'UK News': 0, 'Program Clips': 0 },
+    newsNewCounts: { All: 0, 'US News': 0, 'UK News': 0, 'Program Clips': 0 },
 
     // Custom Video Tags { "videoId": ["tag1", "tag2"] }
     videoTags: JSON.parse(localStorage.getItem('yt_explorer_tags') || '{}'),
@@ -518,8 +609,16 @@
     localStorage.setItem('yt_explorer_tracked_channels', JSON.stringify(state.trackedChannels));
   }
 
+  function persistNewsChannels() {
+    localStorage.setItem('yt_explorer_news_channels', JSON.stringify(state.newsChannels));
+  }
+
   function persistTrackedSeenAt() {
     localStorage.setItem('yt_explorer_tracked_seen_at', JSON.stringify(state.trackedSeenAt));
+  }
+
+  function persistNewsSeenAt() {
+    localStorage.setItem('yt_explorer_news_seen_at', JSON.stringify(state.newsSeenAt));
   }
 
   function persistContinueWatching() {
@@ -622,6 +721,10 @@
     return ['All', ...groups];
   }
 
+  function getNewsGroups() {
+    return ['All', 'US News', 'UK News', 'Program Clips'];
+  }
+
   function getTrackedVideosForActiveGroup() {
     if (state.activeTrackedGroup === 'All') {
       return [...state.trackedFeedVideos];
@@ -636,10 +739,41 @@
     return state.trackedSeenBaseline[video.trackedGroup || 'Custom'] || 0;
   }
 
+  function getNewsVideosForActiveGroup() {
+    if (state.activeNewsGroup === 'All') {
+      return [...state.newsFeedVideos];
+    }
+
+    if (state.activeNewsGroup === 'Program Clips') {
+      return state.newsFeedVideos.filter((video) => Boolean(video.newsProgram));
+    }
+
+    return state.newsFeedVideos.filter((video) => (video.newsRegion || 'US News') === state.activeNewsGroup);
+  }
+
+  function getNewsBaselineForVideo(video) {
+    if (state.activeNewsGroup === 'All') {
+      return state.newsSeenBaseline.All || 0;
+    }
+
+    if (state.activeNewsGroup === 'Program Clips') {
+      return state.newsSeenBaseline['Program Clips'] || 0;
+    }
+
+    return state.newsSeenBaseline[video.newsRegion || 'US News'] || 0;
+  }
+
   function isTrackedVideoNew(video) {
     if (video.sourceType !== 'tracked') return false;
     const publishedAt = new Date(video.addedAt).getTime();
     const baseline = getTrackedBaselineForVideo(video);
+    return publishedAt > baseline;
+  }
+
+  function isNewsVideoNew(video) {
+    if (video.sourceType !== 'news') return false;
+    const publishedAt = new Date(video.addedAt).getTime();
+    const baseline = getNewsBaselineForVideo(video);
     return publishedAt > baseline;
   }
 
@@ -654,6 +788,21 @@
       state.trackedSeenAt[group] = now;
     }
     persistTrackedSeenAt();
+  }
+
+  function markNewsGroupSeen(group) {
+    const now = Date.now();
+
+    if (group === 'All') {
+      state.newsSeenAt.All = now;
+      getNewsGroups().filter((entry) => entry !== 'All').forEach((entry) => {
+        state.newsSeenAt[entry] = now;
+      });
+    } else {
+      state.newsSeenAt[group] = now;
+    }
+
+    persistNewsSeenAt();
   }
 
   function recalculateTrackedNewCounts(videos, baseline = state.trackedSeenAt) {
@@ -678,6 +827,28 @@
     state.trackedNewCounts = counts;
   }
 
+  function recalculateNewsNewCounts(videos, baseline = state.newsSeenAt) {
+    const counts = { All: 0, 'US News': 0, 'UK News': 0, 'Program Clips': 0 };
+
+    videos.forEach((video) => {
+      const publishedAt = new Date(video.addedAt).getTime();
+      if (publishedAt > (baseline.All || 0)) {
+        counts.All += 1;
+      }
+
+      const region = video.newsRegion || 'US News';
+      if (publishedAt > (baseline[region] || 0)) {
+        counts[region] += 1;
+      }
+
+      if (video.newsProgram && publishedAt > (baseline['Program Clips'] || 0)) {
+        counts['Program Clips'] += 1;
+      }
+    });
+
+    state.newsNewCounts = counts;
+  }
+
   function applyTrackedFeedSelection(markSeen = false) {
     state.allVideos = getTrackedVideosForActiveGroup();
     state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
@@ -687,6 +858,18 @@
 
     if (markSeen) {
       markTrackedGroupSeen(state.activeTrackedGroup);
+      renderPlaylists();
+    }
+  }
+
+  function applyNewsFeedSelection(markSeen = false) {
+    state.allVideos = getNewsVideosForActiveGroup();
+    state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+    renderCategoryChips();
+    applyFilters();
+
+    if (markSeen) {
+      markNewsGroupSeen(state.activeNewsGroup);
       renderPlaylists();
     }
   }
@@ -947,6 +1130,7 @@
       fetchUserInfo();
       fetchPlaylists();
       fetchTrackedFeed({ background: true });
+      fetchNewsFeed({ background: true });
     }
   }
 
@@ -1172,11 +1356,177 @@
     }
   }
 
+  async function hydrateNewsChannels() {
+    const unresolvedChannels = state.newsChannels.filter((channel) => !channel.id && channel.handle);
+    if (unresolvedChannels.length === 0) return;
+
+    const resolved = await Promise.allSettled(
+      unresolvedChannels.map(async (channel) => {
+        const handle = channel.handle.replace(/^@/, '');
+        const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=${encodeURIComponent(handle)}`;
+        const data = await apiFetch(url);
+        const item = data.items?.[0];
+        if (!item) {
+          throw new Error(`Channel not found for ${channel.handle}`);
+        }
+
+        return {
+          ...channel,
+          id: item.id,
+          title: item.snippet?.title || channel.title,
+        };
+      })
+    );
+
+    let didChange = false;
+    const resolvedByHandle = new Map();
+    resolved.forEach((result) => {
+      if (result.status !== 'fulfilled') {
+        console.warn('News channel resolution failed:', result.reason);
+        return;
+      }
+      resolvedByHandle.set(result.value.handle, result.value);
+    });
+
+    state.newsChannels = state.newsChannels.map((channel) => {
+      const updated = resolvedByHandle.get(channel.handle);
+      if (!updated) return channel;
+      didChange = true;
+      return updated;
+    });
+
+    if (didChange) {
+      persistNewsChannels();
+    }
+  }
+
+  async function fetchNewsFeed({ background = false } = {}) {
+    if (state.isLoading) return;
+
+    const baseline = { ...state.newsSeenAt };
+
+    if (!background) {
+      state.isLoading = true;
+      show(dom.loadingSpinner);
+      hide(dom.emptyState);
+      hide(dom.loadMoreWrapper);
+      dom.videoGrid.innerHTML = '';
+    }
+
+    try {
+      await hydrateNewsChannels();
+
+      const perChannelLimit = 4;
+      const feedResponses = await Promise.allSettled(
+        state.newsChannels
+          .filter((channel) => channel.id)
+          .map(async (channel) => {
+            const uploadsPlaylistId = getUploadsPlaylistId(channel.id);
+            const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${perChannelLimit}`;
+            const data = await apiFetch(url);
+            return { channel, items: data.items || [] };
+          })
+      );
+
+      const aggregated = [];
+      feedResponses.forEach((result) => {
+        if (result.status !== 'fulfilled') {
+          console.warn('News channel fetch failed:', result.reason);
+          return;
+        }
+
+        const { channel, items } = result.value;
+        items.forEach((item) => {
+          const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
+          if (!videoId) return;
+
+          aggregated.push({
+            id: videoId,
+            title: item.snippet.title,
+            channel: item.snippet.videoOwnerChannelTitle || item.snippet.channelTitle || channel.title,
+            thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
+            addedAt: item.contentDetails?.videoPublishedAt || item.snippet.publishedAt,
+            duration: 0,
+            durationFormatted: '0:00',
+            category: channel.group,
+            isPodcast: false,
+            description: '',
+            tags: [],
+            sourceType: 'news',
+            newsRegion: channel.group,
+            newsProgram: detectNewsProgram(item.snippet.title),
+          });
+        });
+      });
+
+      const deduped = Array.from(new Map(aggregated.map((video) => [video.id, video])).values());
+      const videoIds = deduped.map((video) => video.id).filter(Boolean);
+
+      const detailMap = {};
+      const detailChunks = chunkArray(videoIds, 50);
+      for (const ids of detailChunks) {
+        const detailUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${ids.join(',')}&maxResults=50`;
+        const detailData = await apiFetch(detailUrl);
+        (detailData.items || []).forEach((video) => {
+          detailMap[video.id] = {
+            duration: parseDuration(video.contentDetails.duration),
+            description: video.snippet.description || '',
+            tags: video.snippet.tags || [],
+            channel: video.snippet.channelTitle || '',
+          };
+        });
+      }
+
+      const mergedVideos = deduped
+        .map((video) => {
+          const detail = detailMap[video.id] || null;
+          const duration = detail?.duration || 0;
+          const channelTitle = detail?.channel || video.channel;
+          const newsProgram = detectNewsProgram(video.title);
+
+          return {
+            ...video,
+            channel: channelTitle,
+            duration,
+            durationFormatted: formatDuration(duration),
+            category: newsProgram ? 'Program Clips' : (video.newsRegion || 'US News'),
+            isPodcast: false,
+            description: detail?.description || '',
+            tags: detail?.tags || [],
+            newsProgram,
+          };
+        })
+        .sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
+
+      state.newsSeenBaseline = baseline;
+      state.newsFeedVideos = mergedVideos;
+      recalculateNewsNewCounts(mergedVideos, baseline);
+
+      if (!background && state.activePlaylistId === 'NEWS_FEED') {
+        applyNewsFeedSelection(true);
+      } else {
+        renderPlaylists();
+      }
+    } catch (error) {
+      console.error('News feed error:', error);
+      if (!background) {
+        showToast('Failed to load news feed.', 'error');
+      }
+    } finally {
+      if (!background) {
+        state.isLoading = false;
+        hide(dom.loadingSpinner);
+      }
+    }
+  }
+
   function renderPlaylists() {
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
     const trackedGroups = getTrackedGroups();
+    const newsGroups = getNewsGroups();
     const totalTrackedNew = state.trackedNewCounts.All || 0;
+    const totalNewsNew = state.newsNewCounts.All || 0;
     const pinnedOrder = new Map(state.pinnedPlaylists.map((id, index) => [id, index]));
 
     const appendDivider = (label) => {
@@ -1270,6 +1620,41 @@
           ${(state.trackedNewCounts[group] || 0) > 0 ? `<span class="feed-count-badge">${state.trackedNewCounts[group]}</span>` : ''}
         `;
         groupItem.addEventListener('click', () => selectTrackedFeedGroup(group, groupItem));
+        dom.sidebarList.appendChild(groupItem);
+      });
+
+    const newsItem = document.createElement('div');
+    newsItem.className = 'playlist-item' + (state.activePlaylistId === 'NEWS_FEED' ? ' active' : '');
+    newsItem.innerHTML = `
+      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+        <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+      </div>
+      <div class="playlist-meta">
+        <div class="playlist-title">News Feed</div>
+        <div class="playlist-video-count">${state.newsChannels.length} channels monitored</div>
+      </div>
+      ${totalNewsNew > 0 ? `<span class="feed-count-badge">${totalNewsNew}</span>` : ''}
+    `;
+    newsItem.addEventListener('click', () => selectNewsFeedGroup('All', newsItem));
+    dom.sidebarList.appendChild(newsItem);
+
+    newsGroups
+      .filter((group) => group !== 'All')
+      .forEach((group) => {
+        const countLabel = group === 'Program Clips'
+          ? `${state.newsFeedVideos.filter((video) => Boolean(video.newsProgram)).length} clips`
+          : `${state.newsChannels.filter((channel) => channel.group === group).length} channels`;
+
+        const groupItem = document.createElement('div');
+        groupItem.className = 'playlist-item tracked-group-item' + (state.activePlaylistId === 'NEWS_FEED' && state.activeNewsGroup === group ? ' active' : '');
+        groupItem.innerHTML = `
+          <div class="playlist-meta">
+            <div class="playlist-title">${escHtml(group)}</div>
+            <div class="playlist-video-count">${countLabel}</div>
+          </div>
+          ${(state.newsNewCounts[group] || 0) > 0 ? `<span class="feed-count-badge">${state.newsNewCounts[group]}</span>` : ''}
+        `;
+        groupItem.addEventListener('click', () => selectNewsFeedGroup(group, groupItem));
         dom.sidebarList.appendChild(groupItem);
       });
 
@@ -1371,6 +1756,12 @@
       show(dom.filterBar);
       dom.filterBar.classList.remove('mobile-open');
       await fetchTrackedFeed();
+    } else if (playlistId === 'NEWS_FEED') {
+      state.searchMode = 'news';
+      hide(dom.discoverBar);
+      show(dom.filterBar);
+      dom.filterBar.classList.remove('mobile-open');
+      await fetchNewsFeed();
     } else if (playlistId === 'CONTINUE_WATCHING') {
       state.searchMode = 'continue';
       hide(dom.discoverBar);
@@ -1392,6 +1783,11 @@
   async function selectTrackedFeedGroup(group, el) {
     state.activeTrackedGroup = group;
     await selectPlaylist('TRACKED_FEED', el);
+  }
+
+  async function selectNewsFeedGroup(group, el) {
+    state.activeNewsGroup = group;
+    await selectPlaylist('NEWS_FEED', el);
   }
 
   // ---- Videos ----
@@ -1780,9 +2176,17 @@
     const trackedNewVisible = state.activePlaylistId === 'TRACKED_FEED'
       ? videos.filter((video) => isTrackedVideoNew(video)).length
       : 0;
+    const newsNewVisible = state.activePlaylistId === 'NEWS_FEED'
+      ? videos.filter((video) => isNewsVideoNew(video)).length
+      : 0;
+    const newsClipVisible = state.activePlaylistId === 'NEWS_FEED'
+      ? videos.filter((video) => Boolean(video.newsProgram)).length
+      : 0;
     dom.resultsCount.textContent = state.activePlaylistId === 'TRACKED_FEED'
       ? `${videos.length} video${videos.length !== 1 ? 's' : ''} found • ${trackedNewVisible} new since your last visit`
-      : `${videos.length} video${videos.length !== 1 ? 's' : ''} found`;
+      : state.activePlaylistId === 'NEWS_FEED'
+        ? `${videos.length} video${videos.length !== 1 ? 's' : ''} found • ${newsNewVisible} new • ${newsClipVisible} program clips`
+        : `${videos.length} video${videos.length !== 1 ? 's' : ''} found`;
 
     if (state.searchMode === 'youtube') {
       hide(dom.loadMoreWrapper); // basic search doesn't implement pagination yet
@@ -1812,6 +2216,13 @@
         shouldShowEmpty ? 'No fresh uploads yet' : 'No videos found',
         state.allVideos.length === 0
           ? 'The tracked feed is ready, but none of the monitored channels returned recent uploads yet.'
+          : 'Try adjusting your filters or search terms.'
+      );
+    } else if (state.activePlaylistId === 'NEWS_FEED') {
+      updateEmptyState(
+        shouldShowEmpty ? 'No news clips yet' : 'No videos found',
+        state.allVideos.length === 0
+          ? 'The news feed is ready, but no recent uploads were returned from the monitored channels yet.'
           : 'Try adjusting your filters or search terms.'
       );
     } else {
@@ -1848,6 +2259,9 @@
       const resumeEntry = getResumeEntry(v.id);
       const resumePercent = getResumePercent(v, resumeEntry);
       const isNewTrackedVideo = isTrackedVideoNew(v);
+      const newsProgramHtml = v.newsProgram
+        ? `<div class="video-news-program">${escHtml(v.newsProgram)}</div>`
+        : '';
       
       const tagsHtml = hasTags 
         ? `<div class="video-tags-container">
@@ -1895,6 +2309,7 @@
         <div class="video-info">
           <div class="video-title" title="${escHtml(v.title)}">${escHtml(v.title)}</div>
           <div class="video-channel">${escHtml(v.channel)}</div>
+          ${newsProgramHtml}
           <div class="video-meta-row">
             <span>${timeAgo(v.addedAt)}</span>
             <span class="video-category-badge">${escHtml(v.category)}</span>
@@ -2385,16 +2800,17 @@
 
     if (restored === true) {
       // Valid token — show the app immediately
-      hide(dom.loginOverlay);
-      show(dom.app);
-      
-      state.isInitialLoad = true;
-      try {
-        await Promise.all([fetchUserInfo(), fetchPlaylists()]);
-        await fetchTrackedFeed({ background: true });
-      } catch(e) {
-        console.warn('Initial data load failed (likely stale token).');
-      }
+        hide(dom.loginOverlay);
+        show(dom.app);
+        
+        state.isInitialLoad = true;
+        try {
+          await Promise.all([fetchUserInfo(), fetchPlaylists()]);
+          await fetchTrackedFeed({ background: true });
+          await fetchNewsFeed({ background: true });
+        } catch(e) {
+          console.warn('Initial data load failed (likely stale token).');
+        }
       state.isInitialLoad = false;
       
       setupTokenRefresh();
