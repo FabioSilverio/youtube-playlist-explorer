@@ -278,6 +278,11 @@ body {
 .playlist-item:hover { background: rgba(255,255,255,0.04); }
 .playlist-item.active { background: rgba(255,71,87,0.1); border-color: rgba(255,71,87,0.2); }
 
+.tracked-group-item {
+  margin-left: 18px;
+  padding-left: 14px;
+}
+
 .playlist-remove-btn {
   position: absolute;
   right: 8px;
@@ -320,6 +325,21 @@ body {
 .playlist-video-count {
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+.feed-count-badge {
+  margin-left: auto;
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: rgba(255,71,87,0.18);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0 8px;
 }
 
 /* ---------- MAIN CONTENT ---------- */
@@ -641,6 +661,21 @@ body {
   padding: 2px 7px;
   border-radius: 4px;
   letter-spacing: 0.03em;
+}
+
+.video-new-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: linear-gradient(135deg, #ff4757, #ff7b54);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 10px 20px rgba(255,71,87,0.3);
 }
 
 .video-progress-track {
