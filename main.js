@@ -5,6 +5,40 @@
 (() => {
   'use strict';
 
+  const DEFAULT_TRACKED_CHANNELS = [
+    { id: 'UCnI_h3e6b5jGLfly2SY57SA', title: 'HasanAbi', handle: '@HasanAbi', group: 'Hasan' },
+    { id: 'UCtoaZpBnrd0lhycxYJ4MNOQ', title: 'HasanAbi Archive', handle: '@HasanAbiArchivefan2', group: 'Hasan' },
+    { id: 'UC1hW1iEFDsW-6V0zC8jqVQA', title: 'Hasan Reactions', handle: '@HasanReactionsfanTwo', group: 'Hasan' },
+    { id: 'UCN7jo9su_7oDqwpfin8lgjw', title: 'Hasanabi Clips', handle: '@HasanabiClips', group: 'Hasan' },
+    { id: 'UCBBQ9PIs8ARguuwVJZowGIg', title: 'Hasanabi Productions', handle: '@HasanabiProductionsfanchannel', group: 'Hasan' },
+    { id: 'UCWE7noWEACLMziyBrQxlTgQ', title: 'Hasanabi Central', handle: '@HasanabiCentral1453', group: 'Hasan' },
+    { id: 'UC6U-yoC2sJ_TA-OOcJ9PF9A', title: 'HASANABI Stream TW', handle: '@HASANABIStreamTW', group: 'Hasan' },
+    { id: 'UCWHClDRLdVr2BeRS9b9sNZQ', title: 'Destiny', handle: '@destiny', group: 'Destiny' },
+    { id: 'UC4aqtbSmF7jDxOeiD19eZCA', title: 'DesTiny Clipper', handle: '@dggfanboy', group: 'Destiny' },
+    { id: 'UC554eY5jNUfDq3yDOJYirOQ', title: 'Last Night On Destiny', handle: '@LastNightOnDestiny', group: 'Destiny' },
+    { id: 'UCRDQkGpuVCeMfqdrSGhk2Hg', title: 'DestinyVault', handle: '@DestinyVault', group: 'Destiny' },
+    { id: 'UCUC1Y65XvU2n9lb6GvfAQ5g', title: 'Destiny DGG Clips', handle: '@DestinyDGGClips', group: 'Destiny' },
+    { id: 'UCeRrWJtDH_NUXQAwzCYpf1w', title: 'DGG clips', handle: '@DGGclips', group: 'Destiny' },
+    { id: 'UCNer6UYFzkD7n3JhE4vgjFQ', title: 'DGG_Clips', handle: '@DGG_Clips', group: 'Destiny' },
+  ];
+
+  function getInitialTrackedChannels() {
+    try {
+      const raw = localStorage.getItem('yt_explorer_tracked_channels');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (error) {
+      console.warn('Unable to read tracked channels from storage.', error);
+    }
+
+    localStorage.setItem('yt_explorer_tracked_channels', JSON.stringify(DEFAULT_TRACKED_CHANNELS));
+    return DEFAULT_TRACKED_CHANNELS.map((channel) => ({ ...channel }));
+  }
+
   // ---- State ----
   const state = {
     accessToken: null,
@@ -39,6 +73,9 @@
 
     // Followed Playlists
     followedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_followed') || '[]'),
+
+    // Tracked channels feed
+    trackedChannels: getInitialTrackedChannels(),
 
     // Custom Video Tags { "videoId": ["tag1", "tag2"] }
     videoTags: JSON.parse(localStorage.getItem('yt_explorer_tags') || '{}'),
@@ -155,6 +192,18 @@
   function debounce(fn, ms) {
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  }
+
+  function chunkArray(items, size) {
+    const chunks = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  function getUploadsPlaylistId(channelId) {
+    return channelId && channelId.startsWith('UC') ? `UU${channelId.slice(2)}` : channelId;
   }
 
   function parseDuration(iso) {
@@ -615,6 +664,109 @@
     }
   }
 
+  async function fetchTrackedFeed() {
+    if (state.isLoading) return;
+
+    state.isLoading = true;
+    show(dom.loadingSpinner);
+    hide(dom.emptyState);
+    hide(dom.loadMoreWrapper);
+    dom.videoGrid.innerHTML = '';
+
+    try {
+      const perChannelLimit = 4;
+      const feedResponses = await Promise.allSettled(
+        state.trackedChannels.map(async (channel) => {
+          const uploadsPlaylistId = getUploadsPlaylistId(channel.id);
+          const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${perChannelLimit}`;
+          const data = await apiFetch(url);
+          return { channel, items: data.items || [] };
+        })
+      );
+
+      const aggregated = [];
+      feedResponses.forEach((result) => {
+        if (result.status !== 'fulfilled') {
+          console.warn('Tracked channel fetch failed:', result.reason);
+          return;
+        }
+
+        const { channel, items } = result.value;
+        items.forEach((item) => {
+          const videoId = item.contentDetails?.videoId || item.snippet?.resourceId?.videoId;
+          if (!videoId) return;
+
+          aggregated.push({
+            id: videoId,
+            title: item.snippet.title,
+            channel: item.snippet.videoOwnerChannelTitle || item.snippet.channelTitle || channel.title,
+            thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
+            addedAt: item.contentDetails?.videoPublishedAt || item.snippet.publishedAt,
+            duration: 0,
+            durationFormatted: '0:00',
+            category: channel.group,
+            isPodcast: false,
+            description: '',
+            tags: [],
+            sourceType: 'tracked',
+            trackedChannelId: channel.id,
+            trackedChannelHandle: channel.handle,
+            trackedGroup: channel.group,
+          });
+        });
+      });
+
+      const deduped = Array.from(new Map(aggregated.map((video) => [video.id, video])).values());
+      const videoIds = deduped.map((video) => video.id).filter(Boolean);
+
+      const detailMap = {};
+      const detailChunks = chunkArray(videoIds, 50);
+      for (const ids of detailChunks) {
+        const detailUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${ids.join(',')}&maxResults=50`;
+        const detailData = await apiFetch(detailUrl);
+        (detailData.items || []).forEach((video) => {
+          detailMap[video.id] = {
+            duration: parseDuration(video.contentDetails.duration),
+            description: video.snippet.description || '',
+            categoryId: video.snippet.categoryId,
+            tags: video.snippet.tags || [],
+            channel: video.snippet.channelTitle || '',
+          };
+        });
+      }
+
+      const mergedVideos = deduped
+        .map((video) => {
+          const detail = detailMap[video.id] || null;
+          const duration = detail?.duration || 0;
+          const channelTitle = detail?.channel || video.channel;
+          return {
+            ...video,
+            channel: channelTitle,
+            duration,
+            durationFormatted: formatDuration(duration),
+            category: detail?.categoryId ? (YT_CATEGORIES[detail.categoryId] || video.trackedGroup || 'Other') : (video.trackedGroup || 'Other'),
+            isPodcast: isPodcast(video.title, channelTitle, duration),
+            description: detail?.description || '',
+            tags: detail?.tags || [],
+          };
+        })
+        .sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
+
+      state.allVideos = mergedVideos;
+      state.detectedCategories = new Set(mergedVideos.map((video) => video.category).filter(Boolean));
+      state.nextPageToken = null;
+      renderCategoryChips();
+      applyFilters();
+    } catch (error) {
+      console.error('Tracked feed error:', error);
+      showToast('Failed to load tracked channels feed.', 'error');
+    } finally {
+      state.isLoading = false;
+      hide(dom.loadingSpinner);
+    }
+  }
+
   function renderPlaylists() {
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
@@ -633,6 +785,20 @@
     `;
     discoverItem.addEventListener('click', () => selectPlaylist('DISCOVER', discoverItem));
     dom.sidebarList.appendChild(discoverItem);
+
+    const trackedItem = document.createElement('div');
+    trackedItem.className = 'playlist-item' + (state.activePlaylistId === 'TRACKED_FEED' ? ' active' : '');
+    trackedItem.innerHTML = `
+      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+        <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M9 17h6"/></svg>
+      </div>
+      <div class="playlist-meta">
+        <div class="playlist-title">Tracked Feed</div>
+        <div class="playlist-video-count">${state.trackedChannels.length} channels monitored</div>
+      </div>
+    `;
+    trackedItem.addEventListener('click', () => selectPlaylist('TRACKED_FEED', trackedItem));
+    dom.sidebarList.appendChild(trackedItem);
 
     const continueItem = document.createElement('div');
     continueItem.className = 'playlist-item' + (state.activePlaylistId === 'CONTINUE_WATCHING' ? ' active' : '');
@@ -752,6 +918,12 @@
       if (dom.discoverInput.value.trim()) {
         performYoutubeSearch();
       }
+    } else if (playlistId === 'TRACKED_FEED') {
+      state.searchMode = 'tracked';
+      hide(dom.discoverBar);
+      show(dom.filterBar);
+      dom.filterBar.classList.remove('mobile-open');
+      await fetchTrackedFeed();
     } else if (playlistId === 'CONTINUE_WATCHING') {
       state.searchMode = 'continue';
       hide(dom.discoverBar);
@@ -1183,6 +1355,13 @@
         shouldShowEmpty ? 'Nothing queued right now' : 'No videos found',
         state.allVideos.length === 0
           ? 'Start a video here and we will save your place automatically.'
+          : 'Try adjusting your filters or search terms.'
+      );
+    } else if (state.activePlaylistId === 'TRACKED_FEED') {
+      updateEmptyState(
+        shouldShowEmpty ? 'No fresh uploads yet' : 'No videos found',
+        state.allVideos.length === 0
+          ? 'The tracked feed is ready, but none of the monitored channels returned recent uploads yet.'
           : 'Try adjusting your filters or search terms.'
       );
     } else {
