@@ -93,20 +93,7 @@
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const merged = new Map(DEFAULT_NEWS_CHANNELS.map((channel) => [channel.handle, { ...channel }]));
-          parsed.forEach((channel) => {
-            const key = channel.handle || `${channel.title}-${channel.group}`;
-            const existing = merged.get(key) || {};
-            merged.set(key, {
-              ...existing,
-              ...channel,
-              id: channel.id || existing.id || '',
-              title: channel.title || existing.title || '',
-              handle: channel.handle || existing.handle || '',
-              group: channel.group || existing.group || 'US News',
-            });
-          });
-          const normalized = [...merged.values()];
+          const normalized = sanitizeNewsChannels(parsed);
           localStorage.setItem('yt_explorer_news_channels', JSON.stringify(normalized));
           return normalized;
         }
@@ -149,6 +136,30 @@
     const normalizedTitle = title.toLowerCase();
     const matched = NEWS_SHOW_PATTERNS.find((entry) => entry.matches.some((pattern) => normalizedTitle.includes(pattern)));
     return matched ? matched.program : '';
+  }
+
+  function sanitizeNewsChannels(channels) {
+    const base = new Map(DEFAULT_NEWS_CHANNELS.map((channel) => [channel.handle || channel.id || channel.title, { ...channel }]));
+
+    if (Array.isArray(channels)) {
+      channels.forEach((channel) => {
+        if (!channel || typeof channel !== 'object') return;
+        const key = channel.handle || channel.id || channel.title;
+        if (!key) return;
+
+        const existing = base.get(key) || {};
+        base.set(key, {
+          ...existing,
+          ...channel,
+          id: typeof (channel.id || existing.id || '') === 'string' ? (channel.id || existing.id || '') : '',
+          title: channel.title || existing.title || '',
+          handle: channel.handle || existing.handle || '',
+          group: channel.group || existing.group || 'US News',
+        });
+      });
+    }
+
+    return [...base.values()].filter((channel) => channel && (channel.id || channel.handle || channel.title));
   }
 
   // ---- State ----
@@ -1526,12 +1537,24 @@
     }
 
     try {
-      await hydrateNewsChannels();
+      state.newsChannels = sanitizeNewsChannels(state.newsChannels);
+      persistNewsChannels();
+
+      try {
+        await hydrateNewsChannels();
+      } catch (error) {
+        console.warn('News channel hydration failed, continuing with known channel IDs.', error);
+      }
+
+      if (!state.newsChannels.some((channel) => typeof channel.id === 'string' && channel.id.startsWith('UC'))) {
+        state.newsChannels = DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
+        persistNewsChannels();
+      }
 
       const perChannelLimit = 4;
       const feedResponses = await Promise.allSettled(
         state.newsChannels
-          .filter((channel) => channel.id)
+          .filter((channel) => typeof channel.id === 'string' && channel.id.startsWith('UC'))
           .map(async (channel) => {
             const uploadsPlaylistId = getUploadsPlaylistId(channel.id);
             const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${perChannelLimit}`;
@@ -1578,15 +1601,19 @@
       const detailChunks = chunkArray(videoIds, 50);
       for (const ids of detailChunks) {
         const detailUrl = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,snippet&id=${ids.join(',')}&maxResults=50`;
-        const detailData = await apiFetch(detailUrl);
-        (detailData.items || []).forEach((video) => {
-          detailMap[video.id] = {
-            duration: parseDuration(video.contentDetails.duration),
-            description: video.snippet.description || '',
-            tags: video.snippet.tags || [],
-            channel: video.snippet.channelTitle || '',
-          };
-        });
+        try {
+          const detailData = await apiFetch(detailUrl);
+          (detailData.items || []).forEach((video) => {
+            detailMap[video.id] = {
+              duration: parseDuration(video.contentDetails.duration),
+              description: video.snippet.description || '',
+              tags: video.snippet.tags || [],
+              channel: video.snippet.channelTitle || '',
+            };
+          });
+        } catch (error) {
+          console.warn('News detail fetch failed for chunk, continuing.', error);
+        }
       }
 
       const mergedVideos = deduped
