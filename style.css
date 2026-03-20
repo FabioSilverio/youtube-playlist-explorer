@@ -264,6 +264,14 @@ body {
 
 .sidebar-list { padding: 4px 10px 20px; display: flex; flex-direction: column; gap: 2px; }
 
+.playlist-section-label {
+  margin: 16px 10px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
 .playlist-item {
   display: flex;
   align-items: center;
@@ -283,26 +291,49 @@ body {
   padding-left: 14px;
 }
 
-.playlist-remove-btn {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: rgba(0,0,0,0.5);
-  border: none;
-  color: #fff;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: flex;
+.playlist-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.playlist-action-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.35);
+  color: var(--text-secondary);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.78;
   transition: var(--transition-fast);
 }
-.playlist-item:hover .playlist-remove-btn { opacity: 1; }
-.playlist-remove-btn:hover { background: var(--accent); }
+
+.playlist-item:hover .playlist-action-btn,
+.playlist-item.active .playlist-action-btn {
+  opacity: 1;
+}
+
+.playlist-action-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--text-primary);
+  border-color: rgba(255,255,255,0.18);
+}
+
+.playlist-pin-btn.is-pinned {
+  color: var(--accent);
+  border-color: rgba(255,71,87,0.26);
+  background: rgba(255,71,87,0.12);
+}
+
+.playlist-remove-btn:hover {
+  background: rgba(255,71,87,0.16);
+  color: var(--accent);
+}
 
 
 .playlist-thumb {

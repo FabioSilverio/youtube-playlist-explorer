@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Watch - YouTube Playlist Explorer</title>
+  <meta name="description" content="Dedicated video watch page with cinema mode and progress tracking." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="watch.css" />
+</head>
+<body class="watch-body">
+  <div class="watch-page">
+    <header class="watch-header">
+      <button id="btn-back" class="btn-text watch-back" type="button">Back to library</button>
+      <div class="watch-header-actions">
+        <button id="btn-toggle-cinema" class="btn-small watch-action-btn" type="button">Cinema mode</button>
+        <button id="btn-open-youtube-watch" class="btn-small watch-action-btn watch-action-secondary" type="button">Open on YouTube</button>
+      </div>
+    </header>
+
+    <main class="watch-layout">
+      <section class="watch-stage-panel">
+        <div class="watch-player-shell">
+          <div id="watch-player" class="watch-player"></div>
+        </div>
+      </section>
+
+      <aside class="watch-meta-panel">
+        <div class="watch-kicker">Now Watching</div>
+        <h1 id="watch-title" class="watch-title">Loading video...</h1>
+        <p id="watch-channel" class="watch-channel"></p>
+        <p id="watch-details" class="watch-details"></p>
+        <p id="watch-progress" class="watch-progress"></p>
+        <div class="watch-status-row">
+          <span id="watch-status-badge" class="watch-status-badge hidden">In progress</span>
+        </div>
+        <div class="watch-copy">
+          <h2>About</h2>
+          <p id="watch-description">We are getting the player ready.</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="watch.js?v=1.1.0"></script>
+</body>
+</html>

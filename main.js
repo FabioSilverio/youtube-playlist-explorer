@@ -86,6 +86,7 @@
 
     // Followed Playlists
     followedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_followed') || '[]'),
+    pinnedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_pinned_playlists') || '[]'),
 
     // Tracked channels feed
     trackedChannels: getInitialTrackedChannels(),
@@ -525,6 +526,37 @@
     localStorage.setItem('yt_explorer_continue', JSON.stringify(state.continueWatching));
   }
 
+  function persistFollowedPlaylists() {
+    localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
+  }
+
+  function persistPinnedPlaylists() {
+    localStorage.setItem('yt_explorer_pinned_playlists', JSON.stringify(state.pinnedPlaylists));
+  }
+
+  function persistSelectedVideo(video) {
+    localStorage.setItem('yt_explorer_selected_video', JSON.stringify(video));
+  }
+
+  function isPlaylistPinned(playlistId) {
+    return state.pinnedPlaylists.includes(playlistId);
+  }
+
+  function togglePinnedPlaylist(playlistId) {
+    if (!playlistId) return;
+
+    if (isPlaylistPinned(playlistId)) {
+      state.pinnedPlaylists = state.pinnedPlaylists.filter((id) => id !== playlistId);
+      showToast('Playlist unpinned.');
+    } else {
+      state.pinnedPlaylists = [...state.pinnedPlaylists, playlistId];
+      showToast('Playlist pinned for quick access.');
+    }
+
+    persistPinnedPlaylists();
+    renderPlaylists();
+  }
+
   function getContinueWatchingVideos() {
     return Object.values(state.continueWatching)
       .filter((video) => (video.progressSeconds || 0) > 0)
@@ -549,6 +581,12 @@
   function updateEmptyState(title, text) {
     dom.emptyStateTitle.textContent = title;
     dom.emptyStateText.textContent = text;
+  }
+
+  function openWatchPage(video) {
+    if (!video?.id) return;
+    persistSelectedVideo(video);
+    window.location.href = `watch.html?v=${encodeURIComponent(video.id)}`;
   }
 
   function getTrackedGroups() {
@@ -1111,6 +1149,55 @@
     const continueWatchingVideos = getContinueWatchingVideos();
     const trackedGroups = getTrackedGroups();
     const totalTrackedNew = state.trackedNewCounts.All || 0;
+    const pinnedOrder = new Map(state.pinnedPlaylists.map((id, index) => [id, index]));
+
+    const appendDivider = (label) => {
+      const divider = document.createElement('div');
+      divider.className = 'playlist-section-label';
+      divider.textContent = label;
+      dom.sidebarList.appendChild(divider);
+    };
+
+    const appendPlaylistEntry = (pl, { isFollowed = false } = {}) => {
+      const thumb = pl.snippet.thumbnails?.medium?.url || pl.snippet.thumbnails?.default?.url || '';
+      const count = pl.contentDetails?.itemCount || 0;
+      const pinned = isPlaylistPinned(pl.id);
+
+      const div = document.createElement('div');
+      div.className = 'playlist-item' + (state.activePlaylistId === pl.id ? ' active' : '');
+      div.innerHTML = `
+        <img class="playlist-thumb" src="${thumb}" alt="" loading="lazy" />
+        <div class="playlist-meta">
+          <div class="playlist-title" title="${escHtml(pl.snippet.title)}">${escHtml(pl.snippet.title)}</div>
+          <div class="playlist-video-count">${count} video${count !== 1 ? 's' : ''}</div>
+        </div>
+        <div class="playlist-actions">
+          <button class="playlist-action-btn playlist-pin-btn ${pinned ? 'is-pinned' : ''}" title="${pinned ? 'Unpin playlist' : 'Pin playlist'}" data-action="pin" aria-label="${pinned ? 'Unpin playlist' : 'Pin playlist'}">
+            <svg width="14" height="14" fill="${pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M5 8V4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v4l-4 5v3H9v-3z"/></svg>
+          </button>
+          ${isFollowed ? `
+            <button class="playlist-action-btn playlist-remove-btn" title="Unfollow playlist" data-action="remove" aria-label="Unfollow playlist">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          ` : ''}
+        </div>
+      `;
+
+      div.querySelector('[data-action="pin"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        togglePinnedPlaylist(pl.id);
+      });
+
+      if (isFollowed) {
+        div.querySelector('[data-action="remove"]').addEventListener('click', (e) => {
+          e.stopPropagation();
+          unfollowPlaylist(pl.id);
+        });
+      }
+
+      div.addEventListener('click', () => selectPlaylist(pl.id, div));
+      dom.sidebarList.appendChild(div);
+    };
 
     // Add "Discover YouTube" special entry
     const discoverItem = document.createElement('div');
@@ -1187,58 +1274,32 @@
     likedItem.addEventListener('click', () => selectPlaylist('LL', likedItem));
     dom.sidebarList.appendChild(likedItem);
 
-    state.playlists.forEach((pl) => {
-      const thumb = pl.snippet.thumbnails?.medium?.url || pl.snippet.thumbnails?.default?.url || '';
-      const count = pl.contentDetails?.itemCount || 0;
+    const pinnedEntries = state.pinnedPlaylists
+      .map((playlistId) => {
+        const own = state.playlists.find((playlist) => playlist.id === playlistId);
+        if (own) return { playlist: own, isFollowed: false };
 
-      const div = document.createElement('div');
-      div.className = 'playlist-item' + (state.activePlaylistId === pl.id ? ' active' : '');
-      div.innerHTML = `
-        <img class="playlist-thumb" src="${thumb}" alt="" loading="lazy" />
-        <div class="playlist-meta">
-          <div class="playlist-title" title="${pl.snippet.title}">${pl.snippet.title}</div>
-          <div class="playlist-video-count">${count} video${count !== 1 ? 's' : ''}</div>
-        </div>
-      `;
-      div.addEventListener('click', () => selectPlaylist(pl.id, div));
-      dom.sidebarList.appendChild(div);
-    });
+        const followed = state.followedPlaylists.find((playlist) => playlist.id === playlistId);
+        if (followed) return { playlist: followed, isFollowed: true };
 
-    if (state.followedPlaylists.length > 0) {
-      const divider = document.createElement('div');
-      divider.style.margin = '16px 10px 8px';
-      divider.style.fontSize = '0.75rem';
-      divider.style.fontWeight = '600';
-      divider.style.color = 'var(--text-muted)';
-      divider.style.textTransform = 'uppercase';
-      divider.textContent = 'Followed Playlists';
-      dom.sidebarList.appendChild(divider);
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => (pinnedOrder.get(a.playlist.id) || 0) - (pinnedOrder.get(b.playlist.id) || 0));
 
-      state.followedPlaylists.forEach((pl) => {
-        const thumb = pl.snippet.thumbnails?.medium?.url || pl.snippet.thumbnails?.default?.url || '';
-        const count = pl.contentDetails?.itemCount || 0;
+    const ownPlaylists = state.playlists.filter((playlist) => !pinnedOrder.has(playlist.id));
+    const followedPlaylists = state.followedPlaylists.filter((playlist) => !pinnedOrder.has(playlist.id));
 
-        const div = document.createElement('div');
-        div.className = 'playlist-item' + (state.activePlaylistId === pl.id ? ' active' : '');
-        div.innerHTML = `
-          <img class="playlist-thumb" src="${thumb}" alt="" loading="lazy" />
-          <div class="playlist-meta">
-            <div class="playlist-title" title="${pl.snippet.title}">${pl.snippet.title}</div>
-            <div class="playlist-video-count">${count} video${count !== 1 ? 's' : ''}</div>
-          </div>
-          <button class="playlist-remove-btn" title="Unfollow playlist" data-id="${pl.id}">
-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
-        `;
-        
-        div.querySelector('.playlist-remove-btn').addEventListener('click', (e) => {
-          e.stopPropagation();
-          unfollowPlaylist(pl.id);
-        });
-        
-        div.addEventListener('click', () => selectPlaylist(pl.id, div));
-        dom.sidebarList.appendChild(div);
-      });
+    if (pinnedEntries.length > 0) {
+      appendDivider('Pinned Playlists');
+      pinnedEntries.forEach(({ playlist, isFollowed }) => appendPlaylistEntry(playlist, { isFollowed }));
+    }
+
+    ownPlaylists.forEach((playlist) => appendPlaylistEntry(playlist));
+
+    if (followedPlaylists.length > 0) {
+      appendDivider('Followed Playlists');
+      followedPlaylists.forEach((playlist) => appendPlaylistEntry(playlist, { isFollowed: true }));
     }
   }
 
@@ -1821,7 +1882,7 @@
       const thumbWrap = card.querySelector('.video-thumb');
       const title = card.querySelector('.video-title');
       
-      const openVideo = () => openInlinePlayer(v);
+      const openVideo = () => openWatchPage(v);
       playBtn.addEventListener('click', openVideo);
       thumbWrap.addEventListener('click', openVideo);
       title.addEventListener('click', openVideo);
@@ -2228,7 +2289,7 @@
       } else {
         const pl = data.items[0];
         state.followedPlaylists.push(pl);
-        localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
+        persistFollowedPlaylists();
         renderPlaylists();
         showToast('Playlist followed successfully!');
         hide(dom.followModal);
@@ -2245,7 +2306,9 @@
 
   function unfollowPlaylist(playlistId) {
     state.followedPlaylists = state.followedPlaylists.filter(p => p.id !== playlistId);
-    localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
+    state.pinnedPlaylists = state.pinnedPlaylists.filter((id) => id !== playlistId);
+    persistFollowedPlaylists();
+    persistPinnedPlaylists();
     renderPlaylists();
     if (state.activePlaylistId === playlistId) {
       if (state.playlists.length > 0) {
