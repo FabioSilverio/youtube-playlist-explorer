@@ -162,10 +162,18 @@
     btnCloseModal: $('#btn-close-modal'),
 
     btnFollowPlaylist: $('#btn-follow-playlist'),
+    btnManageTracked: $('#btn-manage-tracked'),
     followModal: $('#follow-modal'),
     btnCloseFollowModal: $('#btn-close-follow-modal'),
     followInput: $('#follow-input'),
     btnAddFollow: $('#btn-add-follow'),
+
+    trackedModal: $('#tracked-modal'),
+    btnCloseTrackedModal: $('#btn-close-tracked-modal'),
+    trackedInput: $('#tracked-input'),
+    btnAddTracked: $('#btn-add-tracked'),
+    btnResetTracked: $('#btn-reset-tracked'),
+    trackedChannelList: $('#tracked-channel-list'),
 
     tagModal: $('#tag-modal'),
     btnCloseTagModal: $('#btn-close-tag-modal'),
@@ -176,6 +184,8 @@
   // ---- State specific to adding videos ----
   let videoToAdd = null;
   let btnToAdd = null;
+  let pendingAuthRequest = null;
+  let silentRenewPromise = null;
 
   // ---- YouTube Category mapping (most common) ----
   const YT_CATEGORIES = {
@@ -485,6 +495,10 @@
     localStorage.setItem('yt_explorer_watched', JSON.stringify([...state.watchedVideos]));
   }
 
+  function persistTrackedChannels() {
+    localStorage.setItem('yt_explorer_tracked_channels', JSON.stringify(state.trackedChannels));
+  }
+
   function persistContinueWatching() {
     localStorage.setItem('yt_explorer_continue', JSON.stringify(state.continueWatching));
   }
@@ -515,8 +529,164 @@
     dom.emptyStateText.textContent = text;
   }
 
+  function normalizeChannelReference(input) {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      throw new Error('Enter a channel handle, URL, or channel ID.');
+    }
+
+    if (/^UC[\w-]{20,}$/.test(trimmed)) {
+      return { kind: 'id', value: trimmed };
+    }
+
+    if (trimmed.startsWith('@')) {
+      return { kind: 'handle', value: trimmed };
+    }
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      const url = new URL(trimmed);
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts[0]?.startsWith('@')) {
+        return { kind: 'handle', value: parts[0] };
+      }
+      if (parts[0] === 'channel' && parts[1]) {
+        return { kind: 'id', value: parts[1] };
+      }
+    }
+
+    throw new Error('Use a channel @handle, channel URL, or channel ID.');
+  }
+
+  function renderTrackedChannelsList() {
+    dom.trackedChannelList.innerHTML = '';
+
+    if (state.trackedChannels.length === 0) {
+      dom.trackedChannelList.innerHTML = '<p style="color:var(--text-muted);font-size:0.9rem;">No tracked channels yet.</p>';
+      return;
+    }
+
+    [...state.trackedChannels]
+      .sort((a, b) => `${a.group}-${a.title}`.localeCompare(`${b.group}-${b.title}`))
+      .forEach((channel) => {
+        const row = document.createElement('div');
+        row.className = 'tracked-channel-item';
+        row.innerHTML = `
+          <span class="tracked-channel-badge">${escHtml(channel.group || 'Feed')}</span>
+          <div class="tracked-channel-meta">
+            <div class="tracked-channel-title">${escHtml(channel.title)}</div>
+            <div class="tracked-channel-handle">${escHtml(channel.handle || channel.id)}</div>
+          </div>
+          <button class="tracked-channel-remove" type="button">Remove</button>
+        `;
+
+        row.querySelector('.tracked-channel-remove').addEventListener('click', () => {
+          removeTrackedChannel(channel.id);
+        });
+
+        dom.trackedChannelList.appendChild(row);
+      });
+  }
+
+  function openTrackedModal() {
+    renderTrackedChannelsList();
+    dom.trackedInput.value = '';
+    show(dom.trackedModal);
+    setTimeout(() => dom.trackedInput.focus(), 100);
+  }
+
+  function closeTrackedModal() {
+    hide(dom.trackedModal);
+  }
+
+  function removeTrackedChannel(channelId) {
+    state.trackedChannels = state.trackedChannels.filter((channel) => channel.id !== channelId);
+    persistTrackedChannels();
+    renderTrackedChannelsList();
+    renderPlaylists();
+
+    if (state.activePlaylistId === 'TRACKED_FEED') {
+      fetchTrackedFeed();
+    }
+  }
+
+  function resetTrackedChannels() {
+    state.trackedChannels = DEFAULT_TRACKED_CHANNELS.map((channel) => ({ ...channel }));
+    persistTrackedChannels();
+    renderTrackedChannelsList();
+    renderPlaylists();
+    showToast('Tracked channels reset to defaults.');
+
+    if (state.activePlaylistId === 'TRACKED_FEED') {
+      fetchTrackedFeed();
+    }
+  }
+
+  async function lookupTrackedChannel(reference) {
+    const url = reference.kind === 'id'
+      ? `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${encodeURIComponent(reference.value)}`
+      : `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=${encodeURIComponent(reference.value.replace(/^@/, ''))}`;
+
+    const data = await apiFetch(url);
+    const channel = data.items?.[0];
+    if (!channel) {
+      throw new Error('Channel not found. Try a different handle or URL.');
+    }
+
+    const handle = channel.snippet.customUrl
+      ? `@${channel.snippet.customUrl.replace(/^@/, '')}`
+      : (reference.kind === 'handle' ? reference.value : channel.id);
+
+    const title = channel.snippet.title || handle || channel.id;
+    const lower = `${title} ${handle}`.toLowerCase();
+    const group = lower.includes('hasan') ? 'Hasan' : lower.includes('destiny') || lower.includes('dgg') ? 'Destiny' : 'Custom';
+
+    return {
+      id: channel.id,
+      title,
+      handle,
+      group,
+    };
+  }
+
+  async function addTrackedChannel() {
+    const raw = dom.trackedInput.value.trim();
+    if (!raw) return;
+
+    const originalLabel = dom.btnAddTracked.textContent;
+    dom.btnAddTracked.disabled = true;
+    dom.btnAddTracked.textContent = 'Adding...';
+
+    try {
+      const reference = normalizeChannelReference(raw);
+      const channel = await lookupTrackedChannel(reference);
+      if (state.trackedChannels.some((entry) => entry.id === channel.id)) {
+        showToast('This channel is already tracked.', 'error');
+        return;
+      }
+
+      state.trackedChannels.push(channel);
+      persistTrackedChannels();
+      renderTrackedChannelsList();
+      renderPlaylists();
+      dom.trackedInput.value = '';
+      showToast(`Added ${channel.title} to tracked feed.`);
+
+      if (state.activePlaylistId === 'TRACKED_FEED') {
+        fetchTrackedFeed();
+      }
+    } catch (error) {
+      console.error('Add tracked channel failed:', error);
+      showToast(error.message || 'Failed to add tracked channel.', 'error');
+    } finally {
+      dom.btnAddTracked.disabled = false;
+      dom.btnAddTracked.textContent = originalLabel;
+    }
+  }
+
   // ---- Auth (Google Identity Services) ----
   let tokenClient;
+  let tokenRefreshTimer = null;
+  let tokenExpiryNoticeTimer = null;
 
   function initAuth() {
     tokenClient = google.accounts.oauth2.initTokenClient({
@@ -526,10 +696,11 @@
     });
 
     dom.btnLogin.addEventListener('click', () => {
-      tokenClient.requestAccessToken({ prompt: 'select_account' });
+      requestAccessToken({ interactive: true, prompt: 'select_account' }).catch(() => {});
     });
 
     dom.btnLogout.addEventListener('click', () => {
+      stopTokenTimers();
       if (state.accessToken) {
         google.accounts.oauth2.revoke(state.accessToken, () => {});
       }
@@ -541,66 +712,127 @@
     });
   }
 
+  function stopTokenTimers() {
+    if (tokenRefreshTimer) {
+      clearTimeout(tokenRefreshTimer);
+      tokenRefreshTimer = null;
+    }
+    if (tokenExpiryNoticeTimer) {
+      clearTimeout(tokenExpiryNoticeTimer);
+      tokenExpiryNoticeTimer = null;
+    }
+  }
+
+  function requestAccessToken({ interactive = false, prompt = '' } = {}) {
+    if (!tokenClient) {
+      return Promise.reject(new Error('Google login is not ready yet.'));
+    }
+
+    return new Promise((resolve, reject) => {
+      pendingAuthRequest = { interactive, resolve, reject };
+      tokenClient.requestAccessToken({ prompt });
+    });
+  }
+
+  async function renewAccessTokenSilently() {
+    if (!state.accessToken || !tokenClient) return false;
+    if (silentRenewPromise) return silentRenewPromise;
+
+    silentRenewPromise = requestAccessToken({ interactive: false, prompt: '' })
+      .then(() => true)
+      .catch((error) => {
+        console.warn('Silent renew failed:', error);
+        return false;
+      })
+      .finally(() => {
+        silentRenewPromise = null;
+      });
+
+    return silentRenewPromise;
+  }
+
   function handleAuthResponse(resp) {
+    const request = pendingAuthRequest;
+    pendingAuthRequest = null;
+
     if (resp.error) {
-      // Silent refresh failed or user cancelled; just show the login screen cleanly.
-      // Do NOT show error toast here - user just needs to click login.
       console.warn('Auth response error:', resp.error);
-      state.accessToken = null;
-      localStorage.removeItem('yt_explorer_session');
-      localStorage.setItem('yt_explorer_is_logged_in', 'false');
-      show(dom.loginOverlay);
-      hide(dom.app);
+      if (request?.interactive) {
+        state.accessToken = null;
+        localStorage.removeItem('yt_explorer_session');
+        localStorage.setItem('yt_explorer_is_logged_in', 'false');
+        show(dom.loginOverlay);
+        hide(dom.app);
+      }
+      request?.reject(new Error(resp.error));
       return;
     }
+
     state.accessToken = resp.access_token;
     localStorage.setItem('yt_explorer_is_logged_in', 'true');
 
-    // Persist session with expiry
     const expiresAt = Date.now() + (resp.expires_in || 3500) * 1000;
     localStorage.setItem('yt_explorer_session', JSON.stringify({
       accessToken: resp.access_token,
       expiresAt,
     }));
 
-    // Schedule a token refresh 5 min before expiry
     setupTokenRefresh(expiresAt);
 
     hide(dom.loginOverlay);
     show(dom.app);
-    fetchUserInfo();
-    fetchPlaylists();
+    request?.resolve(resp);
+
+    if (request?.interactive) {
+      fetchUserInfo();
+      fetchPlaylists();
+    }
   }
 
-  async function apiFetch(url, options = {}) {
+  function handleAuthExpiry() {
+    state.accessToken = null;
+    stopTokenTimers();
+    localStorage.removeItem('yt_explorer_session');
+    localStorage.setItem('yt_explorer_is_logged_in', 'false');
+    
+    if (dom.btnLogin) {
+      const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
+      dom.btnLogin.innerHTML = originalSVG + ' Sign in with Google';
+      dom.btnLogin.disabled = false;
+    }
+    
+    show(dom.loginOverlay);
+    hide(dom.app);
+  }
+
+  async function apiFetch(url, options = {}, hasRetriedAuth = false) {
     if (!state.accessToken) {
        console.warn("Attempted apiFetch without access token. Halting request.");
        throw new Error('No access token available.');
     }
-    const res = await fetch(url, {
+
+    let res = await fetch(url, {
       ...options,
       headers: { Authorization: `Bearer ${state.accessToken}`, ...(options.headers || {}) },
     });
+
+    if (res.status === 401 && !hasRetriedAuth) {
+      const renewed = await renewAccessTokenSilently();
+      if (renewed && state.accessToken) {
+        res = await fetch(url, {
+          ...options,
+          headers: { Authorization: `Bearer ${state.accessToken}`, ...(options.headers || {}) },
+        });
+      }
+    }
+
     if (res.status === 401) {
       console.warn("API returned 401 Unauthorized.");
-      state.accessToken = null;
-      localStorage.removeItem('yt_explorer_session');
-      localStorage.setItem('yt_explorer_is_logged_in', 'false');
+      handleAuthExpiry();
       
-      if (dom.btnLogin) {
-         const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
-         dom.btnLogin.innerHTML = originalSVG + ' Sign in with Google';
-         dom.btnLogin.disabled = false;
-      }
-      
-      // Only show error toast if it's NOT the first load check.
-      // This prevents "session expired" pops on page load if the local token is dead.
       if (!state.isInitialLoad) {
         showToast("Session expired. Please log in again.", "error");
       }
-      
-      show(dom.loginOverlay);
-      hide(dom.app);
       throw new Error(`API 401: Unauthorized`);
     }
     if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
@@ -1214,11 +1446,8 @@
     }
   }
 
-  // Token auto-refresh — show login screen when token is about to expire,
-  // so user can click once to renew without losing where they are.
-  let tokenRefreshTimer = null;
   function setupTokenRefresh(expiresAt) {
-    if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+    stopTokenTimers();
     if (!expiresAt) {
       try {
         const raw = localStorage.getItem('yt_explorer_session');
@@ -1228,28 +1457,24 @@
     if (!expiresAt) return;
     
     const timeUntilExpiry = expiresAt - Date.now();
-    // Warn the user 5 minutes before the token expires
-    const warnAt = timeUntilExpiry - 5 * 60 * 1000;
-    
-    if (warnAt > 0) {
-      tokenRefreshTimer = setTimeout(() => {
-        showToast('Your session will expire in 5 minutes.', 'success');
-        
-        // After another 5 minutes, force logout
-        setTimeout(() => {
-          if (state.accessToken) {
-            state.accessToken = null;
-            localStorage.removeItem('yt_explorer_session');
-            localStorage.setItem('yt_explorer_is_logged_in', 'false');
-            show(dom.loginOverlay);
-            hide(dom.app);
-          }
-        }, 5 * 60 * 1000);
-      }, warnAt);
-    } else if (timeUntilExpiry > 0) {
-      // Already in the warning window
-      console.warn('Token expires very soon.');
+    const renewAt = Math.max(30 * 1000, timeUntilExpiry - 10 * 60 * 1000);
+
+    if (timeUntilExpiry <= 0) {
+      handleAuthExpiry();
+      return;
     }
+
+    tokenRefreshTimer = setTimeout(async () => {
+      const renewed = await renewAccessTokenSilently();
+      if (!renewed) {
+        const remaining = expiresAt - Date.now();
+        if (remaining > 0) {
+          tokenExpiryNoticeTimer = setTimeout(() => {
+            showToast('Session expiring soon. If requests fail, click Sign in to renew.', 'error');
+          }, Math.max(0, remaining - 60 * 1000));
+        }
+      }
+    }, renewAt);
   }
 
   function applyFilters() {
@@ -1790,6 +2015,10 @@
       show(dom.followModal);
       setTimeout(() => dom.followInput.focus(), 100);
     });
+
+    dom.btnManageTracked.addEventListener('click', () => {
+      openTrackedModal();
+    });
     
     dom.btnCloseFollowModal.addEventListener('click', () => {
       hide(dom.followModal);
@@ -1803,6 +2032,16 @@
     dom.followInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') followPlaylist();
     });
+
+    dom.btnCloseTrackedModal.addEventListener('click', closeTrackedModal);
+    dom.trackedModal.addEventListener('click', (e) => {
+      if (e.target === dom.trackedModal) closeTrackedModal();
+    });
+    dom.btnAddTracked.addEventListener('click', addTrackedChannel);
+    dom.trackedInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') addTrackedChannel();
+    });
+    dom.btnResetTracked.addEventListener('click', resetTrackedChannels);
 
     // Tag Modal
     dom.btnCloseTagModal.addEventListener('click', () => {

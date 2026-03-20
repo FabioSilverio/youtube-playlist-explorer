@@ -251,6 +251,7 @@ body {
   z-index: 2;
 }
 .sidebar-header h2 { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-secondary); }
+.sidebar-actions { display: flex; align-items: center; gap: 8px; }
 
 .badge {
   background: var(--accent);
@@ -891,6 +892,78 @@ body {
 .modal-playlist-thumb { width: 40px; height: 28px; border-radius: 4px; object-fit: cover; }
 .modal-playlist-title { font-size: 0.9rem; font-weight: 500; }
 
+.tracked-modal-card { max-width: 520px; }
+.tracked-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.tracked-input-row .search-input { flex: 1; }
+.tracked-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+.tracked-channel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.tracked-channel-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.02);
+}
+.tracked-channel-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(88,141,239,0.14);
+  color: var(--blue);
+}
+.tracked-channel-meta {
+  min-width: 0;
+  flex: 1;
+}
+.tracked-channel-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.tracked-channel-handle {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.tracked-channel-remove {
+  border: none;
+  border-radius: var(--radius-full);
+  background: rgba(255,71,87,0.12);
+  color: var(--accent);
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.tracked-channel-remove:hover {
+  background: rgba(255,71,87,0.2);
+}
+
 /* Load More */
 .load-more-wrapper { text-align: center; padding: 24px 0 20px; }
 .btn-load-more {
@@ -973,6 +1046,7 @@ body {
   .player-shell { grid-template-columns: 1fr; }
   .player-stage { min-height: 220px; }
   .player-details { padding: 16px; }
+  .tracked-input-row { flex-direction: column; align-items: stretch; }
   /* Extra bottom padding to account for mobile nav */
   .main-content { padding: 16px 12px 100px; }
   .sidebar { padding-bottom: 80px; }
