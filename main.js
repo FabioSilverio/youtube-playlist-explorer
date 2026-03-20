@@ -92,7 +92,17 @@
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const merged = new Map(DEFAULT_NEWS_CHANNELS.map((channel) => [channel.handle, { ...channel }]));
+          parsed.forEach((channel) => {
+            const key = channel.handle || `${channel.title}-${channel.group}`;
+            merged.set(key, {
+              ...(merged.get(key) || {}),
+              ...channel,
+            });
+          });
+          const normalized = [...merged.values()];
+          localStorage.setItem('yt_explorer_news_channels', JSON.stringify(normalized));
+          return normalized;
         }
       }
     } catch (error) {
@@ -1054,6 +1064,7 @@
   let tokenClient;
   let tokenRefreshTimer = null;
   let tokenExpiryNoticeTimer = null;
+  let sessionRecoveryInFlight = null;
 
   function initAuth() {
     tokenClient = google.accounts.oauth2.initTokenClient({
@@ -1102,7 +1113,7 @@
   }
 
   async function renewAccessTokenSilently() {
-    if (!state.accessToken || !tokenClient) return false;
+    if (!tokenClient) return false;
     if (silentRenewPromise) return silentRenewPromise;
 
     silentRenewPromise = requestAccessToken({ interactive: false, prompt: '' })
@@ -1116,6 +1127,54 @@
       });
 
     return silentRenewPromise;
+  }
+
+  function getStoredSession() {
+    try {
+      const raw = localStorage.getItem('yt_explorer_session');
+      return raw ? JSON.parse(raw) : null;
+    } catch (error) {
+      console.warn('Unable to read stored session.', error);
+      return null;
+    }
+  }
+
+  function getSessionExpiry() {
+    return getStoredSession()?.expiresAt || 0;
+  }
+
+  function wasPreviouslyLoggedIn() {
+    return localStorage.getItem('yt_explorer_is_logged_in') === 'true';
+  }
+
+  async function attemptSessionRecovery() {
+    if (!tokenClient || !wasPreviouslyLoggedIn()) return false;
+    if (sessionRecoveryInFlight) return sessionRecoveryInFlight;
+
+    sessionRecoveryInFlight = renewAccessTokenSilently()
+      .catch(() => false)
+      .finally(() => {
+        sessionRecoveryInFlight = null;
+      });
+
+    return sessionRecoveryInFlight;
+  }
+
+  async function refreshSessionOnReturn() {
+    if (!tokenClient || !wasPreviouslyLoggedIn()) return;
+
+    const expiresAt = getSessionExpiry();
+    const isExpiringSoon = !expiresAt || (expiresAt - Date.now()) <= 10 * 60 * 1000;
+    if (!isExpiringSoon) return;
+
+    const renewed = await attemptSessionRecovery();
+    if (!renewed) return;
+
+    if (state.activePlaylistId === 'TRACKED_FEED') {
+      fetchTrackedFeed({ background: false });
+    } else if (state.activePlaylistId === 'NEWS_FEED') {
+      fetchNewsFeed({ background: false });
+    }
   }
 
   function handleAuthResponse(resp) {
@@ -1176,8 +1235,11 @@
 
   async function apiFetch(url, options = {}, hasRetriedAuth = false) {
     if (!state.accessToken) {
-       console.warn("Attempted apiFetch without access token. Halting request.");
-       throw new Error('No access token available.');
+       const renewed = await attemptSessionRecovery();
+       if (!renewed || !state.accessToken) {
+         console.warn("Attempted apiFetch without access token. Halting request.");
+         throw new Error('No access token available.');
+       }
     }
 
     let res = await fetch(url, {
@@ -1384,22 +1446,42 @@
     const unresolvedChannels = state.newsChannels.filter((channel) => !channel.id && channel.handle);
     if (unresolvedChannels.length === 0) return;
 
-    const resolved = await Promise.allSettled(
-      unresolvedChannels.map(async (channel) => {
-        const handle = channel.handle.replace(/^@/, '');
-        const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=${encodeURIComponent(handle)}`;
-        const data = await apiFetch(url);
-        const item = data.items?.[0];
-        if (!item) {
-          throw new Error(`Channel not found for ${channel.handle}`);
+    const lookupNewsChannelIdentity = async (channel) => {
+      const handle = (channel.handle || '').replace(/^@/, '');
+      if (handle) {
+        const handleUrl = `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=${encodeURIComponent(handle)}`;
+        const handleData = await apiFetch(handleUrl);
+        const handleMatch = handleData.items?.[0];
+        if (handleMatch) {
+          return {
+            ...channel,
+            id: handleMatch.id,
+            title: handleMatch.snippet?.title || channel.title,
+          };
         }
+      }
 
-        return {
-          ...channel,
-          id: item.id,
-          title: item.snippet?.title || channel.title,
-        };
-      })
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=5&q=${encodeURIComponent(channel.title)}`;
+      const searchData = await apiFetch(searchUrl);
+      const normalizedTarget = channel.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const bestMatch = (searchData.items || []).find((item) => {
+        const candidate = (item.snippet?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        return candidate === normalizedTarget || candidate.includes(normalizedTarget) || normalizedTarget.includes(candidate);
+      }) || searchData.items?.[0];
+
+      if (!bestMatch?.id?.channelId) {
+        throw new Error(`Channel not found for ${channel.title}`);
+      }
+
+      return {
+        ...channel,
+        id: bestMatch.id.channelId,
+        title: bestMatch.snippet.channelTitle || bestMatch.snippet.title || channel.title,
+      };
+    };
+
+    const resolved = await Promise.allSettled(
+      unresolvedChannels.map((channel) => lookupNewsChannelIdentity(channel))
     );
 
     let didChange = false;
@@ -2751,10 +2833,18 @@
 
     window.addEventListener('pageshow', () => {
       refreshPlaybackStateFromStorage();
+      refreshSessionOnReturn().catch(() => {});
     });
 
     window.addEventListener('focus', () => {
       refreshPlaybackStateFromStorage();
+      refreshSessionOnReturn().catch(() => {});
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        refreshSessionOnReturn().catch(() => {});
+      }
     });
 
     // Tag Modal
@@ -2875,20 +2965,23 @@
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }
-      state.isInitialLoad = false;
-      
-      setupTokenRefresh();
-    } else {
-      state.isInitialLoad = false;
-    }
+        state.isInitialLoad = false;
+        
+        setupTokenRefresh();
+      } else {
+        state.isInitialLoad = false;
+      }
 
     // Load Google Identity Services
-    const checkGIS = setInterval(() => {
-      if (typeof google !== 'undefined' && google.accounts?.oauth2) {
-        clearInterval(checkGIS);
-        initAuth();
-      }
-    }, 100);
+      const checkGIS = setInterval(() => {
+        if (typeof google !== 'undefined' && google.accounts?.oauth2) {
+          clearInterval(checkGIS);
+          initAuth();
+          if (restored !== true && wasPreviouslyLoggedIn()) {
+            attemptSessionRecovery().catch(() => {});
+          }
+        }
+      }, 100);
   }
 
   // Start when DOM is ready
