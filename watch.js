@@ -10,6 +10,7 @@
   };
 
   const dom = {
+    header: document.querySelector('.watch-header'),
     backButton: document.getElementById('btn-back'),
     cinemaButton: document.getElementById('btn-toggle-cinema'),
     youtubeButton: document.getElementById('btn-open-youtube-watch'),
@@ -28,6 +29,7 @@
     progressTimer: null,
     playerReady: false,
     theaterMode: false,
+    layoutFrame: null,
   };
 
   function readJson(key, fallback) {
@@ -249,6 +251,34 @@
     updateProgressUi();
   }
 
+  function syncPlayerLayout() {
+    const viewportWidth = window.innerWidth || 1280;
+    const viewportHeight = window.innerHeight || 720;
+    const headerHeight = dom.header?.offsetHeight || 0;
+    const horizontalPadding = state.theaterMode ? 20 : 48;
+    const verticalReserve = state.theaterMode ? headerHeight + 56 : headerHeight + 160;
+    const maxWidth = state.theaterMode ? 2560 : 1920;
+    const availableWidth = Math.max(320, viewportWidth - horizontalPadding);
+    const availableHeight = Math.max(220, viewportHeight - verticalReserve);
+    const widthFromHeight = availableHeight * (16 / 9);
+    const targetWidth = Math.min(availableWidth, widthFromHeight, maxWidth);
+    const targetHeight = Math.round(targetWidth * (9 / 16));
+
+    document.documentElement.style.setProperty('--watch-player-width', `${Math.round(targetWidth)}px`);
+    document.documentElement.style.setProperty('--watch-player-height', `${targetHeight}px`);
+  }
+
+  function schedulePlayerLayoutSync() {
+    if (state.layoutFrame) {
+      cancelAnimationFrame(state.layoutFrame);
+    }
+
+    state.layoutFrame = requestAnimationFrame(() => {
+      state.layoutFrame = null;
+      syncPlayerLayout();
+    });
+  }
+
   function setTheaterMode(enabled) {
     state.theaterMode = Boolean(enabled);
     document.body.classList.toggle('theater-mode', state.theaterMode);
@@ -256,6 +286,7 @@
     writeJson(STORAGE_KEYS.watchPreferences, {
       theaterMode: state.theaterMode,
     });
+    schedulePlayerLayoutSync();
   }
 
   function saveContinueProgress(progressSeconds) {
@@ -440,9 +471,12 @@
 
     window.addEventListener('pagehide', syncPlayerProgress);
     window.addEventListener('beforeunload', syncPlayerProgress);
+    window.addEventListener('resize', schedulePlayerLayoutSync);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         syncPlayerProgress();
+      } else {
+        schedulePlayerLayoutSync();
       }
     });
   }
@@ -464,6 +498,7 @@
       return;
     }
 
+    schedulePlayerLayoutSync();
     persistSelectedVideo(state.video);
     renderVideoMeta();
     mountPlayer();

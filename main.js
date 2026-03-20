@@ -538,6 +538,34 @@
     localStorage.setItem('yt_explorer_selected_video', JSON.stringify(video));
   }
 
+  function refreshPlaybackStateFromStorage() {
+    try {
+      state.continueWatching = JSON.parse(localStorage.getItem('yt_explorer_continue') || '{}');
+    } catch (error) {
+      console.warn('Unable to refresh continue watching from storage.', error);
+      state.continueWatching = {};
+    }
+
+    try {
+      state.watchedVideos = new Set(JSON.parse(localStorage.getItem('yt_explorer_watched') || '[]'));
+    } catch (error) {
+      console.warn('Unable to refresh watched videos from storage.', error);
+      state.watchedVideos = new Set();
+    }
+
+    renderPlaylists();
+
+    if (!state.activePlaylistId) return;
+
+    if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+      state.allVideos = getContinueWatchingVideos();
+      state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+      renderCategoryChips();
+    }
+
+    applyFilters();
+  }
+
   function isPlaylistPinned(playlistId) {
     return state.pinnedPlaylists.includes(playlistId);
   }
@@ -2241,6 +2269,14 @@
       if (e.key === 'Enter') addTrackedChannel();
     });
     dom.btnResetTracked.addEventListener('click', resetTrackedChannels);
+
+    window.addEventListener('pageshow', () => {
+      refreshPlaybackStateFromStorage();
+    });
+
+    window.addEventListener('focus', () => {
+      refreshPlaybackStateFromStorage();
+    });
 
     // Tag Modal
     dom.btnCloseTagModal.addEventListener('click', () => {
