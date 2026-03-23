@@ -32,8 +32,8 @@
     { id: 'UCeY0bbntWzzVIaj2z3QigXg', title: 'NBC News', handle: '@NBCNews', group: 'US News' },
     { id: 'UCBi2mrWuNuyYy4gbM6fU18Q', title: 'ABC News', handle: '@ABCNews', group: 'US News' },
     { id: 'UC8p1vwvWtl6T73JiExfWs1g', title: 'CBS News', handle: '@CBSNews', group: 'US News' },
-    { title: 'PBS NewsHour', handle: '@PBSNewsHour', group: 'US News' },
-    { title: 'Bloomberg Television', handle: '@BloombergTV', group: 'US News' },
+    { id: 'UC2s0uKOc2WgB9eGta7cUUEA', title: 'PBS NewsHour', handle: '@PBSNewsHour', group: 'US News' },
+    { id: 'UCIALMKvObZNtJ6AmdCLP7Lg', title: 'Bloomberg Television', handle: '@markets', group: 'US News' },
     { id: 'UCXs0PlIGUDSXfBaF7j-1euA', title: 'The Don Lemon Show', handle: '@TheDonLemonShow', group: 'US News' },
     { id: 'UChqUTb7kYRX8-EiaN3XFrSQ', title: 'Reuters', handle: '@Reuters', group: 'World News' },
     { id: 'UC52X5wxOL_s5yw0dQk7NtgA', title: 'Associated Press', handle: '@AssociatedPress', group: 'World News' },
@@ -42,7 +42,7 @@
     { id: 'UC16niRr50-MSBwiO3YDb3RA', title: 'BBC News', handle: '@BBCNews', group: 'UK News' },
     { id: 'UCoMdktPbSTixAyNGwb-UYkQ', title: 'Sky News', handle: '@SkyNews', group: 'UK News' },
     { id: 'UCTrQ7HXWRRxr7OsOtodr2_w', title: 'Channel 4 News', handle: '@Channel4News', group: 'UK News' },
-    { title: 'ITV News', handle: '@itvnews', group: 'UK News' },
+    { id: 'UCFQgi22Ht00CpaOQLtvZx2A', title: 'ITV News', handle: '@itvnews', group: 'UK News' },
   ];
 
   const NEWS_SPECIAL_GROUPS = ['Today', 'Trending', 'Program Clips'];
@@ -1417,8 +1417,12 @@
   let tokenRefreshTimer = null;
   let tokenExpiryNoticeTimer = null;
   let sessionRecoveryInFlight = null;
+  let authClientReadyPromise = null;
+  let authInitialized = false;
 
   function initAuth() {
+    if (authInitialized || typeof google === 'undefined' || !google.accounts?.oauth2) return;
+    authInitialized = true;
     tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CONFIG.CLIENT_ID,
       scope: CONFIG.SCOPES,
@@ -1440,6 +1444,43 @@
       show(dom.loginOverlay);
       hide(dom.app);
     });
+  }
+
+  function ensureAuthClientReady(timeoutMs = 10000) {
+    if (tokenClient) return Promise.resolve(true);
+    if (authClientReadyPromise) return authClientReadyPromise;
+
+    authClientReadyPromise = new Promise((resolve) => {
+      const startedAt = Date.now();
+
+      const tick = () => {
+        if (tokenClient) {
+          resolve(true);
+          return;
+        }
+
+        if (typeof google !== 'undefined' && google.accounts?.oauth2) {
+          initAuth();
+          resolve(Boolean(tokenClient));
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          resolve(false);
+          return;
+        }
+
+        setTimeout(tick, 100);
+      };
+
+      tick();
+    }).finally(() => {
+      if (!tokenClient) {
+        authClientReadyPromise = null;
+      }
+    });
+
+    return authClientReadyPromise;
   }
 
   function stopTokenTimers() {
@@ -1465,7 +1506,10 @@
   }
 
   async function renewAccessTokenSilently() {
-    if (!tokenClient) return false;
+    if (!tokenClient) {
+      const ready = await ensureAuthClientReady();
+      if (!ready || !tokenClient) return false;
+    }
     if (silentRenewPromise) return silentRenewPromise;
 
     silentRenewPromise = requestAccessToken({ interactive: false, prompt: '' })
@@ -1500,7 +1544,11 @@
   }
 
   async function attemptSessionRecovery() {
-    if (!tokenClient || !wasPreviouslyLoggedIn()) return false;
+    if (!wasPreviouslyLoggedIn()) return false;
+    if (!tokenClient) {
+      const ready = await ensureAuthClientReady();
+      if (!ready || !tokenClient) return false;
+    }
     if (sessionRecoveryInFlight) return sessionRecoveryInFlight;
 
     sessionRecoveryInFlight = renewAccessTokenSilently()
@@ -1839,6 +1887,16 @@
     }
   }
 
+  function shouldRetryNewsChannelResolution(error) {
+    const message = String(error?.message || '').toLowerCase();
+    if (!message) return false;
+    if (message.includes('api 403')) return false;
+    return message.includes('api 400')
+      || message.includes('api 404')
+      || message.includes('channel not found')
+      || message.includes('missing channel');
+  }
+
   async function resolveNewsChannelIdentity(channel, { force = false } = {}) {
     if (!force && typeof channel.id === 'string' && channel.id.startsWith('UC')) {
       return channel;
@@ -1859,6 +1917,9 @@
         }
       } catch (error) {
         console.warn(`Handle lookup failed for ${channel.handle || channel.title}:`, error);
+        if (String(error?.message || '').includes('API 403')) {
+          throw error;
+        }
       }
     }
 
@@ -1914,6 +1975,9 @@
     try {
       return await fetchUploads(channel);
     } catch (firstError) {
+      if (!shouldRetryNewsChannelResolution(firstError)) {
+        throw firstError;
+      }
       console.warn(`Primary fetch failed for ${channel.title || channel.handle}, retrying after channel refresh.`, firstError);
       const refreshed = await resolveNewsChannelIdentity(channel, { force: true });
       mergeNewsChannelUpdate(refreshed);
@@ -3859,6 +3923,7 @@
     renderPlaylists();
 
     const restored = tryRestoreSession();
+    const authReadyPromise = ensureAuthClientReady().catch(() => false);
 
     if (restored === true) {
       // Valid token — show the app immediately
@@ -3867,6 +3932,7 @@
         
         state.isInitialLoad = true;
         try {
+          await authReadyPromise;
           await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
           await fetchTrackedFeed({ background: true });
           await fetchNewsFeed({ background: true });
@@ -3880,16 +3946,11 @@
         state.isInitialLoad = false;
       }
 
-    // Load Google Identity Services
-      const checkGIS = setInterval(() => {
-        if (typeof google !== 'undefined' && google.accounts?.oauth2) {
-          clearInterval(checkGIS);
-          initAuth();
-          if (restored !== true && wasPreviouslyLoggedIn()) {
-            attemptSessionRecovery().catch(() => {});
-          }
-        }
-      }, 100);
+    authReadyPromise.then(() => {
+      if (restored !== true && wasPreviouslyLoggedIn()) {
+        attemptSessionRecovery().catch(() => {});
+      }
+    });
   }
 
   // Start when DOM is ready
