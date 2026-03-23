@@ -383,6 +383,8 @@
     newsLiveVideos: [],
     activeNewsGroup: 'All',
     activeNewsTrendWindow: '24h',
+    isFetchingNewsFeed: false,
+    isFetchingNewsLiveFeed: false,
     newsSeenAt: getInitialNewsSeenAt(),
     newsSeenBaseline: getDefaultNewsSeenAt(),
     newsNewCounts: getDefaultNewsSeenAt(),
@@ -1443,7 +1445,6 @@
       fetchSpecialPlaylists();
       fetchTrackedFeed({ background: true });
       fetchNewsFeed({ background: true });
-      fetchNewsLiveFeed({ background: true });
     }
   }
 
@@ -1805,9 +1806,10 @@
   }
 
   async function fetchNewsFeed({ background = false } = {}) {
-    if (state.isLoading) return;
+    if (state.isFetchingNewsFeed) return;
 
     const baseline = { ...state.newsSeenAt };
+    state.isFetchingNewsFeed = true;
 
     if (!background) {
       state.isLoading = true;
@@ -1922,6 +1924,7 @@
         showToast('Failed to load news feed.', 'error');
       }
     } finally {
+      state.isFetchingNewsFeed = false;
       if (!background) {
         state.isLoading = false;
         hide(dom.loadingSpinner);
@@ -1930,7 +1933,8 @@
   }
 
   async function fetchNewsLiveFeed({ background = false } = {}) {
-    if (state.isLoading) return;
+    if (state.isFetchingNewsLiveFeed) return;
+    state.isFetchingNewsLiveFeed = true;
 
     if (!background) {
       state.isLoading = true;
@@ -2110,6 +2114,7 @@
         showToast('Failed to load live news feed.', 'error');
       }
     } finally {
+      state.isFetchingNewsLiveFeed = false;
       if (!background) {
         state.isLoading = false;
         hide(dom.loadingSpinner);
@@ -3728,7 +3733,6 @@
           await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
           await fetchTrackedFeed({ background: true });
           await fetchNewsFeed({ background: true });
-          await fetchNewsLiveFeed({ background: true });
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }
