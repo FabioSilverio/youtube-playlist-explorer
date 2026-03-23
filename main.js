@@ -163,6 +163,31 @@
       : [];
   }
 
+  function getInitialPlaylistCache() {
+    const parsed = readJsonStorage('yt_explorer_playlist_cache', []);
+    return Array.isArray(parsed)
+      ? parsed.map(sanitizeStoredPlaylist).filter(Boolean)
+      : [];
+  }
+
+  function getInitialPlaylistVideoCache() {
+    const parsed = readJsonStorage('yt_explorer_playlist_video_cache', {});
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([key, value]) => typeof key === 'string' && key.trim() && value && typeof value === 'object')
+        .map(([key, value]) => [
+          key,
+          {
+            updatedAt: value.updatedAt || '',
+            nextPageToken: value.nextPageToken || null,
+            videos: Array.isArray(value.videos) ? value.videos.filter((video) => video && typeof video === 'object' && typeof video.id === 'string') : [],
+          },
+        ])
+    );
+  }
+
   function getInitialPinnedPlaylists() {
     const parsed = readJsonStorage('yt_explorer_pinned_playlists', []);
     return Array.isArray(parsed)
@@ -407,7 +432,7 @@
   const state = {
     accessToken: null,
     user: null,
-    playlists: [],
+    playlists: getInitialPlaylistCache(),
     activePlaylistId: null,
     allVideos: [],          // all videos in active playlist (all pages)
     filteredVideos: [],     // after filters applied
@@ -437,6 +462,7 @@
 
     // Followed Playlists
     followedPlaylists: getInitialFollowedPlaylists(),
+    playlistVideoCache: getInitialPlaylistVideoCache(),
     pinnedPlaylists: getInitialPinnedPlaylists(),
     watchLaterPlaylistId: localStorage.getItem('yt_explorer_watch_later_id') || '',
 
@@ -905,6 +931,14 @@
     localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
   }
 
+  function persistPlaylistCache() {
+    localStorage.setItem('yt_explorer_playlist_cache', JSON.stringify(state.playlists));
+  }
+
+  function persistPlaylistVideoCache() {
+    localStorage.setItem('yt_explorer_playlist_video_cache', JSON.stringify(state.playlistVideoCache));
+  }
+
   function persistPinnedPlaylists() {
     localStorage.setItem('yt_explorer_pinned_playlists', JSON.stringify(state.pinnedPlaylists));
   }
@@ -919,6 +953,10 @@
 
   function persistSelectedVideo(video) {
     localStorage.setItem('yt_explorer_selected_video', JSON.stringify(video));
+  }
+
+  function isQuotaErrorMessage(message = '') {
+    return String(message).toLowerCase().includes('quota');
   }
 
   function ensureStateCollectionsHealthy() {
@@ -964,6 +1002,8 @@
     if (changed) {
       persistWatchedVideos();
       persistFollowedPlaylists();
+      persistPlaylistCache();
+      persistPlaylistVideoCache();
       persistPinnedPlaylists();
       localStorage.setItem('yt_explorer_tags', JSON.stringify(state.videoTags));
       persistContinueWatching();
@@ -1747,6 +1787,7 @@
         // All pages fetched
         state.playlists = tempPlaylists;
         dom.playlistCount.textContent = state.playlists.length;
+        persistPlaylistCache();
         renderPlaylists();
       }
     } catch (e) {
@@ -1760,14 +1801,19 @@
         }
       }
       console.error('Playlists error:', e);
-      state.playlists = Array.isArray(tempPlaylists) ? tempPlaylists.filter(Boolean) : [];
+      const cachedPlaylists = getInitialPlaylistCache();
+      state.playlists = Array.isArray(tempPlaylists) && tempPlaylists.length > 0
+        ? tempPlaylists.filter(Boolean)
+        : cachedPlaylists;
       dom.playlistCount.textContent = String(state.playlists.length);
       renderPlaylists();
       if (!isSilent) {
         const message = String(e?.message || '');
         const normalizedMessage = message.toLowerCase();
         const detailedMessage = normalizedMessage.includes('quota')
-          ? 'Failed to load playlists: YouTube API quota exceeded.'
+          ? (state.playlists.length > 0
+            ? 'YouTube API quota exceeded. Showing cached playlists.'
+            : 'Failed to load playlists: YouTube API quota exceeded.')
           : normalizedMessage.includes('accessnotconfigured')
             ? 'Failed to load playlists: YouTube API is not enabled in the Google project.'
             : state.playlists.length > 0
@@ -2362,6 +2408,7 @@
 
   function renderPlaylists() {
     ensureStateCollectionsHealthy();
+    dom.playlistCount.textContent = String(state.playlists.length);
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
     const trackedGroups = getTrackedGroups();
@@ -2898,12 +2945,28 @@
       }
 
       state.nextPageToken = nextPageToken;
+      state.playlistVideoCache[state.activePlaylistId] = {
+        updatedAt: new Date().toISOString(),
+        nextPageToken: state.nextPageToken,
+        videos: state.allVideos,
+      };
+      persistPlaylistVideoCache();
       renderCategoryChips();
       applyFilters();
 
     } catch (e) {
       console.error('Video load error:', e);
-      if (!isSilent) showToast('Failed to load videos.', 'error');
+      const cachedEntry = state.playlistVideoCache?.[state.activePlaylistId];
+      if (!isSilent && cachedEntry && Array.isArray(cachedEntry.videos) && cachedEntry.videos.length > 0) {
+        state.allVideos = cachedEntry.videos;
+        state.nextPageToken = null;
+        state.detectedCategories = new Set(cachedEntry.videos.map((video) => video.category).filter(Boolean));
+        renderCategoryChips();
+        applyFilters();
+        showToast(isQuotaErrorMessage(e?.message) ? 'YouTube API quota exceeded. Showing cached playlist.' : 'Showing cached playlist data.', 'error');
+      } else if (!isSilent) {
+        showToast(isQuotaErrorMessage(e?.message) ? 'Failed to load videos: YouTube API quota exceeded.' : 'Failed to load videos.', 'error');
+      }
     } finally {
       if (!isSilent) {
         state.isLoading = false;
