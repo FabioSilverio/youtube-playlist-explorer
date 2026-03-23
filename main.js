@@ -511,6 +511,7 @@
     // Central cache
     centralCacheLoaded: false,
     centralCacheLastSyncAt: localStorage.getItem('yt_explorer_central_cache_synced_at') || '',
+    centralCacheSessionToken: localStorage.getItem('yt_explorer_cache_session_token') || '',
 
     isInitialLoad: true, // track startup check
   };
@@ -986,6 +987,15 @@
     }
   }
 
+  function persistCentralCacheSessionToken(value = '') {
+    state.centralCacheSessionToken = value || '';
+    if (state.centralCacheSessionToken) {
+      localStorage.setItem('yt_explorer_cache_session_token', state.centralCacheSessionToken);
+    } else {
+      localStorage.removeItem('yt_explorer_cache_session_token');
+    }
+  }
+
   function isQuotaErrorMessage(message = '') {
     return String(message).toLowerCase().includes('quota');
   }
@@ -995,7 +1005,40 @@
   }
 
   function isCentralCacheEnabled() {
-    return Boolean(getCentralCacheBase()) && Boolean(state.accessToken);
+    return Boolean(getCentralCacheBase()) && (Boolean(state.accessToken) || Boolean(state.centralCacheSessionToken));
+  }
+
+  function getCentralCacheHeaders(extraHeaders = {}) {
+    const headers = { ...extraHeaders };
+
+    if (state.centralCacheSessionToken) {
+      headers['X-Cache-Session'] = state.centralCacheSessionToken;
+    }
+
+    if (state.accessToken) {
+      headers.Authorization = `Bearer ${state.accessToken}`;
+    }
+
+    return headers;
+  }
+
+  function applyCentralCacheAuth(payload) {
+    const sessionToken = typeof payload?.sessionToken === 'string' ? payload.sessionToken.trim() : '';
+    if (sessionToken) {
+      persistCentralCacheSessionToken(sessionToken);
+    }
+  }
+
+  function updateAuthUi() {
+    if (!dom.btnLogout) return;
+
+    if (state.accessToken) {
+      dom.btnLogout.textContent = 'Sign out';
+      dom.btnLogout.title = 'Sign out';
+    } else {
+      dom.btnLogout.textContent = 'Sign in';
+      dom.btnLogout.title = 'Sign in to refresh YouTube data';
+    }
   }
 
   function buildCentralCacheSnapshot() {
@@ -1074,9 +1117,7 @@
     if (!isCentralCacheEnabled()) return null;
 
     const response = await fetch(`${getCentralCacheBase()}/api/cache/snapshot`, {
-      headers: {
-        Authorization: `Bearer ${state.accessToken}`,
-      },
+      headers: getCentralCacheHeaders(),
     });
 
     if (!response.ok) {
@@ -1088,7 +1129,9 @@
       throw new Error(`Central cache ${response.status}${reason ? `: ${reason}` : ''}`);
     }
 
-    return response.json();
+    const payload = await response.json();
+    applyCentralCacheAuth(payload);
+    return payload;
   }
 
   async function restoreCentralCacheSnapshot({ silent = true } = {}) {
@@ -1114,10 +1157,9 @@
     centralCacheSyncPromise = (async () => {
       const response = await fetch(`${getCentralCacheBase()}/api/cache/snapshot`, {
         method: 'POST',
-        headers: {
+        headers: getCentralCacheHeaders({
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${state.accessToken}`,
-        },
+        }),
         body: JSON.stringify(buildCentralCacheSnapshot()),
       });
 
@@ -1131,6 +1173,7 @@
       }
 
       const payload = await response.json();
+      applyCentralCacheAuth(payload);
       persistCentralCacheSyncTime(payload?.updatedAt || new Date().toISOString());
       return true;
     })()
@@ -1677,6 +1720,10 @@
     });
 
     dom.btnLogout.addEventListener('click', () => {
+      if (!state.accessToken) {
+        requestAccessToken({ interactive: true, prompt: 'select_account' }).catch(() => {});
+        return;
+      }
       stopTokenTimers();
       if (state.accessToken) {
         google.accounts.oauth2.revoke(state.accessToken, () => {});
@@ -1684,6 +1731,7 @@
       state.accessToken = null;
       localStorage.removeItem('yt_explorer_session');
       localStorage.removeItem('yt_explorer_is_logged_in');
+      updateAuthUi();
       show(dom.loginOverlay);
       hide(dom.app);
     });
@@ -1847,8 +1895,15 @@
         state.accessToken = null;
         localStorage.removeItem('yt_explorer_session');
         localStorage.setItem('yt_explorer_is_logged_in', 'false');
-        show(dom.loginOverlay);
-        hide(dom.app);
+        updateAuthUi();
+        if (state.centralCacheSessionToken && (state.playlists.length > 0 || state.followedPlaylists.length > 0)) {
+          hide(dom.loginOverlay);
+          show(dom.app);
+          showToast('Sign-in was cancelled. Showing cached library instead.', 'error');
+        } else {
+          show(dom.loginOverlay);
+          hide(dom.app);
+        }
       }
       request?.reject(new Error(resp.error));
       return;
@@ -1867,6 +1922,7 @@
 
     hide(dom.loginOverlay);
     show(dom.app);
+    updateAuthUi();
     request?.resolve(resp);
 
     if (request?.interactive) {
@@ -1882,6 +1938,7 @@
     stopTokenTimers();
     localStorage.removeItem('yt_explorer_session');
     localStorage.setItem('yt_explorer_is_logged_in', 'false');
+    updateAuthUi();
     
     if (dom.btnLogin) {
       const originalSVG = '<svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
@@ -1889,8 +1946,14 @@
       dom.btnLogin.disabled = false;
     }
     
-    show(dom.loginOverlay);
-    hide(dom.app);
+    if (state.centralCacheSessionToken && (state.playlists.length > 0 || state.followedPlaylists.length > 0)) {
+      hide(dom.loginOverlay);
+      show(dom.app);
+      showToast('Session expired. Showing cached library. Sign in to refresh.', 'error');
+    } else {
+      show(dom.loginOverlay);
+      hide(dom.app);
+    }
   }
 
   async function apiFetch(url, options = {}, hasRetriedAuth = false) {
@@ -4248,9 +4311,14 @@
     ensureStateCollectionsHealthy();
     bindEvents();
     renderPlaylists();
+    updateAuthUi();
     startAuthBootstrap();
 
     const restored = tryRestoreSession();
+    updateAuthUi();
+    const restoredCentralOnly = restored !== true
+      ? await restoreCentralCacheSnapshot({ silent: true })
+      : false;
     const authReadyPromise = ensureAuthClientReady(20000).catch(() => false);
 
     if (restored === true) {
@@ -4271,6 +4339,11 @@
         setupTokenRefresh();
       } else {
         state.isInitialLoad = false;
+        if (restoredCentralOnly) {
+          hide(dom.loginOverlay);
+          show(dom.app);
+          showToast('Loaded cached library. Sign in to refresh YouTube data.');
+        }
       }
 
     authReadyPromise.then(() => {

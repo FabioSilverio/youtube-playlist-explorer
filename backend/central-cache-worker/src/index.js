@@ -20,7 +20,7 @@ function buildCorsHeaders(request, env) {
   return {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Cache-Session',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };
@@ -129,6 +129,20 @@ function sanitizeSnapshot(payload) {
   };
 }
 
+async function getUserIdFromSessionToken(request, env) {
+  const sessionToken = String(request.headers.get('X-Cache-Session') || '').trim();
+  if (!sessionToken) {
+    return { userId: '', sessionToken: '' };
+  }
+
+  const userId = await env.CACHE_STORE.get(`cache-session:${sessionToken}`);
+  if (!userId) {
+    return { userId: '', sessionToken: '' };
+  }
+
+  return { userId, sessionToken };
+}
+
 async function requireGoogleUser(request) {
   const authHeader = request.headers.get('Authorization') || '';
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
@@ -155,6 +169,23 @@ async function requireGoogleUser(request) {
   return user;
 }
 
+async function ensureSessionToken(userId, env) {
+  if (!userId) {
+    throw new Error('Cannot issue cache session without a user id.');
+  }
+
+  const existingToken = await env.CACHE_STORE.get(`cache-user-session:${userId}`);
+  if (existingToken) {
+    await env.CACHE_STORE.put(`cache-session:${existingToken}`, userId);
+    return existingToken;
+  }
+
+  const sessionToken = `${crypto.randomUUID()}${crypto.randomUUID().replace(/-/g, '')}`;
+  await env.CACHE_STORE.put(`cache-user-session:${userId}`, sessionToken);
+  await env.CACHE_STORE.put(`cache-session:${sessionToken}`, userId);
+  return sessionToken;
+}
+
 export default {
   async fetch(request, env) {
     const corsHeaders = buildCorsHeaders(request, env);
@@ -177,14 +208,22 @@ export default {
     }
 
     try {
-      const user = await requireGoogleUser(request);
-      const storageKey = `snapshot:${user.id}`;
+      let { userId, sessionToken } = await getUserIdFromSessionToken(request, env);
+
+      if (!userId) {
+        const user = await requireGoogleUser(request);
+        userId = user.id;
+        sessionToken = await ensureSessionToken(user.id, env);
+      }
+
+      const storageKey = `snapshot:${userId}`;
 
       if (request.method === 'GET') {
         const snapshot = await env.CACHE_STORE.get(storageKey, 'json');
         return json({
           ok: true,
           snapshot: snapshot || {},
+          sessionToken,
         }, { headers: corsHeaders });
       }
 
@@ -195,6 +234,7 @@ export default {
         return json({
           ok: true,
           updatedAt: snapshot.updatedAt,
+          sessionToken,
         }, { headers: corsHeaders });
       }
 
