@@ -512,6 +512,7 @@
     centralCacheLoaded: false,
     centralCacheLastSyncAt: localStorage.getItem('yt_explorer_central_cache_synced_at') || '',
     centralCacheSessionToken: localStorage.getItem('yt_explorer_cache_session_token') || '',
+    youtubeQuotaExceeded: false,
 
     isInitialLoad: true, // track startup check
   };
@@ -998,6 +999,10 @@
 
   function isQuotaErrorMessage(message = '') {
     return String(message).toLowerCase().includes('quota');
+  }
+
+  function markYouTubeQuotaExceeded(value = true) {
+    state.youtubeQuotaExceeded = Boolean(value);
   }
 
   function getCentralCacheBase() {
@@ -1942,9 +1947,9 @@
 
     if (request?.interactive) {
       restoreCentralCacheSnapshot({ silent: true }).catch(() => {});
-      fetchUserInfo();
-      fetchPlaylists();
-      fetchSpecialPlaylists();
+      loadPrimaryLibraryData().catch((error) => {
+        console.warn('Interactive library load failed.', error);
+      });
     }
   }
 
@@ -2014,6 +2019,10 @@
         console.warn('Unable to parse API error body.', parseError);
       }
 
+      if (`${apiReason} ${apiMessage}`.toLowerCase().includes('quota')) {
+        markYouTubeQuotaExceeded(true);
+      }
+
       const detail = [apiReason, apiMessage].filter(Boolean).join(' | ');
       throw new Error(`API ${res.status}: ${res.statusText}${detail ? ` | ${detail}` : ''}`);
     }
@@ -2054,10 +2063,13 @@
   // ---- Playlists ----
   function isRecoverablePlaylistError(error) {
     const message = String(error?.message || '').toLowerCase();
+    if (message.includes('quota')) return false;
+    if (message.includes('accessnotconfigured')) return false;
     return message.includes('401')
-      || message.includes('403')
       || message.includes('no access token')
-      || message.includes('google login is not ready');
+      || message.includes('google login is not ready')
+      || message.includes('invalid credentials')
+      || message.includes('unauthorized');
   }
 
   async function fetchPlaylists(pageToken = '', isSilent = false, tempPlaylists = [], hasRetried = false) {
@@ -2125,6 +2137,10 @@
   }
 
   async function fetchSpecialPlaylists() {
+    if (state.youtubeQuotaExceeded) {
+      return null;
+    }
+
     try {
       const data = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true');
       const relatedPlaylists = data.items?.[0]?.contentDetails?.relatedPlaylists || {};
@@ -2134,6 +2150,14 @@
     } catch (error) {
       console.warn('Unable to fetch special playlists.', error);
       return null;
+    }
+  }
+
+  async function loadPrimaryLibraryData() {
+    markYouTubeQuotaExceeded(false);
+    await Promise.all([fetchUserInfo(), fetchPlaylists()]);
+    if (!state.youtubeQuotaExceeded) {
+      await fetchSpecialPlaylists();
     }
   }
 
@@ -4351,7 +4375,7 @@
         try {
           await authReadyPromise;
           await restoreCentralCacheSnapshot({ silent: true });
-          await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
+          await loadPrimaryLibraryData();
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }
@@ -4373,7 +4397,7 @@
             hide(dom.loginOverlay);
             show(dom.app);
             await restoreCentralCacheSnapshot({ silent: true });
-            await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
+            await loadPrimaryLibraryData();
           })
           .catch(() => {});
       }
