@@ -1041,6 +1041,23 @@
     }
   }
 
+  function hasUsableCachedLibrary() {
+    return state.playlists.length > 0
+      || state.followedPlaylists.length > 0
+      || Object.keys(state.playlistVideoCache || {}).length > 0
+      || Object.keys(state.continueWatching || {}).length > 0;
+  }
+
+  function showCachedLibraryShell(message = '') {
+    hide(dom.loginOverlay);
+    show(dom.app);
+    updateAuthUi();
+    renderPlaylists();
+    if (message) {
+      showToast(message);
+    }
+  }
+
   function buildCentralCacheSnapshot() {
     return {
       playlists: state.playlists,
@@ -1894,12 +1911,10 @@
       if (request?.interactive) {
         state.accessToken = null;
         localStorage.removeItem('yt_explorer_session');
-        localStorage.setItem('yt_explorer_is_logged_in', 'false');
+        localStorage.setItem('yt_explorer_is_logged_in', 'true');
         updateAuthUi();
-        if (state.centralCacheSessionToken && (state.playlists.length > 0 || state.followedPlaylists.length > 0)) {
-          hide(dom.loginOverlay);
-          show(dom.app);
-          showToast('Sign-in was cancelled. Showing cached library instead.', 'error');
+        if (state.centralCacheSessionToken || hasUsableCachedLibrary()) {
+          showCachedLibraryShell('Sign-in was cancelled. Showing cached library instead.');
         } else {
           show(dom.loginOverlay);
           hide(dom.app);
@@ -1937,7 +1952,7 @@
     state.accessToken = null;
     stopTokenTimers();
     localStorage.removeItem('yt_explorer_session');
-    localStorage.setItem('yt_explorer_is_logged_in', 'false');
+    localStorage.setItem('yt_explorer_is_logged_in', 'true');
     updateAuthUi();
     
     if (dom.btnLogin) {
@@ -1946,10 +1961,8 @@
       dom.btnLogin.disabled = false;
     }
     
-    if (state.centralCacheSessionToken && (state.playlists.length > 0 || state.followedPlaylists.length > 0)) {
-      hide(dom.loginOverlay);
-      show(dom.app);
-      showToast('Session expired. Showing cached library. Sign in to refresh.', 'error');
+    if (state.centralCacheSessionToken || hasUsableCachedLibrary()) {
+      showCachedLibraryShell('Session expired. Showing cached library. Sign in to refresh.');
     } else {
       show(dom.loginOverlay);
       hide(dom.app);
@@ -2088,6 +2101,9 @@
         : cachedPlaylists;
       dom.playlistCount.textContent = String(state.playlists.length);
       renderPlaylists();
+      if (state.accessToken && state.playlists.length > 0 && !restoredCentralCache) {
+        scheduleCentralCacheSync();
+      }
       if (!isSilent) {
         const message = String(e?.message || '');
         const normalizedMessage = message.toLowerCase();
@@ -3245,6 +3261,9 @@
         state.detectedCategories = new Set(cachedEntry.videos.map((video) => video.category).filter(Boolean));
         renderCategoryChips();
         applyFilters();
+        if (state.accessToken && !restoredCentralCache) {
+          scheduleCentralCacheSync();
+        }
         showToast(
           isQuotaErrorMessage(e?.message)
             ? `YouTube API quota exceeded. Showing ${restoredCentralCache ? 'central' : 'cached'} playlist.`
@@ -4293,9 +4312,8 @@
       const session = JSON.parse(raw);
       
       if (Date.now() > session.expiresAt) {
-        // Token expired; clean up and show login
+        // Token expired; clear the stale token but keep the login intent so silent recovery can still run.
         localStorage.removeItem('yt_explorer_session');
-        localStorage.setItem('yt_explorer_is_logged_in', 'false');
         return false;
       }
       
@@ -4339,10 +4357,8 @@
         setupTokenRefresh();
       } else {
         state.isInitialLoad = false;
-        if (restoredCentralOnly) {
-          hide(dom.loginOverlay);
-          show(dom.app);
-          showToast('Loaded cached library. Sign in to refresh YouTube data.');
+        if (restoredCentralOnly || hasUsableCachedLibrary()) {
+          showCachedLibraryShell('Loaded cached library. Sign in to refresh YouTube data.');
         }
       }
 
