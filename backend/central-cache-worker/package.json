@@ -1,0 +1,5 @@
+{
+  "name": "youtube-playlist-explorer-central-cache-worker",
+  "private": true,
+  "type": "module"
+}

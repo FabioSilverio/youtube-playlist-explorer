@@ -170,22 +170,28 @@
       : [];
   }
 
-  function getInitialPlaylistVideoCache() {
-    const parsed = readJsonStorage('yt_explorer_playlist_video_cache', {});
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  function sanitizePlaylistVideoCache(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
     return Object.fromEntries(
-      Object.entries(parsed)
-        .filter(([key, value]) => typeof key === 'string' && key.trim() && value && typeof value === 'object')
-        .map(([key, value]) => [
+      Object.entries(value)
+        .filter(([key, entry]) => typeof key === 'string' && key.trim() && entry && typeof entry === 'object')
+        .map(([key, entry]) => [
           key,
           {
-            updatedAt: value.updatedAt || '',
-            nextPageToken: value.nextPageToken || null,
-            videos: Array.isArray(value.videos) ? value.videos.filter((video) => video && typeof video === 'object' && typeof video.id === 'string') : [],
+            updatedAt: entry.updatedAt || '',
+            nextPageToken: entry.nextPageToken || null,
+            videos: Array.isArray(entry.videos)
+              ? entry.videos.filter((video) => video && typeof video === 'object' && typeof video.id === 'string')
+              : [],
           },
         ])
     );
+  }
+
+  function getInitialPlaylistVideoCache() {
+    const parsed = readJsonStorage('yt_explorer_playlist_video_cache', {});
+    return sanitizePlaylistVideoCache(parsed);
   }
 
   function getInitialPinnedPlaylists() {
@@ -211,18 +217,22 @@
 
   function getInitialContinueWatching() {
     const parsed = readJsonStorage('yt_explorer_continue', {});
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return sanitizeContinueWatchingSnapshot(parsed);
+  }
+
+  function sanitizeContinueWatchingSnapshot(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
     return Object.fromEntries(
-      Object.entries(parsed)
-        .filter(([key, value]) => typeof key === 'string' && key.trim() && value && typeof value === 'object')
-        .map(([key, value]) => [
+      Object.entries(value)
+        .filter(([key, entry]) => typeof key === 'string' && key.trim() && entry && typeof entry === 'object')
+        .map(([key, entry]) => [
           key,
           {
-            ...value,
-            progress: Number(value.progress || 0),
-            duration: Number(value.duration || 0),
-            updatedAt: value.updatedAt || '',
+            ...entry,
+            progress: Number(entry.progress || 0),
+            duration: Number(entry.duration || 0),
+            updatedAt: entry.updatedAt || '',
           },
         ])
     );
@@ -498,6 +508,10 @@
     pendingPlayerVideo: null,
     playerProgressTimer: null,
 
+    // Central cache
+    centralCacheLoaded: false,
+    centralCacheLastSyncAt: localStorage.getItem('yt_explorer_central_cache_synced_at') || '',
+
     isInitialLoad: true, // track startup check
   };
 
@@ -596,6 +610,8 @@
   let btnToAdd = null;
   let pendingAuthRequest = null;
   let silentRenewPromise = null;
+  let centralCacheSyncTimer = null;
+  let centralCacheSyncPromise = null;
 
   // ---- YouTube Category mapping (most common) ----
   const YT_CATEGORIES = {
@@ -925,22 +941,27 @@
 
   function persistContinueWatching() {
     localStorage.setItem('yt_explorer_continue', JSON.stringify(state.continueWatching));
+    scheduleCentralCacheSync();
   }
 
   function persistFollowedPlaylists() {
     localStorage.setItem('yt_explorer_followed', JSON.stringify(state.followedPlaylists));
+    scheduleCentralCacheSync();
   }
 
   function persistPlaylistCache() {
     localStorage.setItem('yt_explorer_playlist_cache', JSON.stringify(state.playlists));
+    scheduleCentralCacheSync();
   }
 
   function persistPlaylistVideoCache() {
     localStorage.setItem('yt_explorer_playlist_video_cache', JSON.stringify(state.playlistVideoCache));
+    scheduleCentralCacheSync();
   }
 
   function persistPinnedPlaylists() {
     localStorage.setItem('yt_explorer_pinned_playlists', JSON.stringify(state.pinnedPlaylists));
+    scheduleCentralCacheSync();
   }
 
   function persistWatchLaterPlaylistId() {
@@ -949,14 +970,187 @@
     } else {
       localStorage.removeItem('yt_explorer_watch_later_id');
     }
+    scheduleCentralCacheSync();
   }
 
   function persistSelectedVideo(video) {
     localStorage.setItem('yt_explorer_selected_video', JSON.stringify(video));
   }
 
+  function persistCentralCacheSyncTime(value = '') {
+    state.centralCacheLastSyncAt = value || '';
+    if (state.centralCacheLastSyncAt) {
+      localStorage.setItem('yt_explorer_central_cache_synced_at', state.centralCacheLastSyncAt);
+    } else {
+      localStorage.removeItem('yt_explorer_central_cache_synced_at');
+    }
+  }
+
   function isQuotaErrorMessage(message = '') {
     return String(message).toLowerCase().includes('quota');
+  }
+
+  function getCentralCacheBase() {
+    return String(CONFIG.CACHE_API_BASE || '').trim().replace(/\/+$/, '');
+  }
+
+  function isCentralCacheEnabled() {
+    return Boolean(getCentralCacheBase()) && Boolean(state.accessToken);
+  }
+
+  function buildCentralCacheSnapshot() {
+    return {
+      playlists: state.playlists,
+      playlistVideoCache: state.playlistVideoCache,
+      followedPlaylists: state.followedPlaylists,
+      pinnedPlaylists: state.pinnedPlaylists,
+      continueWatching: state.continueWatching,
+      watchLaterPlaylistId: state.watchLaterPlaylistId || '',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  function applyCentralCacheSnapshot(snapshot = {}) {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+
+    let changed = false;
+    const playlists = Array.isArray(snapshot.playlists)
+      ? snapshot.playlists.map(sanitizeStoredPlaylist).filter(Boolean)
+      : [];
+    const playlistVideoCache = sanitizePlaylistVideoCache(snapshot.playlistVideoCache);
+    const followedPlaylists = Array.isArray(snapshot.followedPlaylists)
+      ? snapshot.followedPlaylists.map(sanitizeStoredPlaylist).filter(Boolean)
+      : [];
+    const pinnedPlaylists = Array.isArray(snapshot.pinnedPlaylists)
+      ? [...new Set(snapshot.pinnedPlaylists.filter((value) => typeof value === 'string' && value.trim()))]
+      : [];
+    const continueWatching = sanitizeContinueWatchingSnapshot(snapshot.continueWatching);
+
+    if (playlists.length > 0) {
+      state.playlists = playlists;
+      persistPlaylistCache();
+      changed = true;
+    }
+
+    if (Object.keys(playlistVideoCache).length > 0) {
+      state.playlistVideoCache = playlistVideoCache;
+      persistPlaylistVideoCache();
+      changed = true;
+    }
+
+    if (followedPlaylists.length > 0) {
+      state.followedPlaylists = followedPlaylists;
+      persistFollowedPlaylists();
+      changed = true;
+    }
+
+    if (pinnedPlaylists.length > 0 || (Array.isArray(snapshot.pinnedPlaylists) && snapshot.pinnedPlaylists.length === 0)) {
+      state.pinnedPlaylists = pinnedPlaylists;
+      persistPinnedPlaylists();
+      changed = true;
+    }
+
+    if (Object.keys(continueWatching).length > 0) {
+      state.continueWatching = continueWatching;
+      persistContinueWatching();
+      changed = true;
+    }
+
+    if (typeof snapshot.watchLaterPlaylistId === 'string' && snapshot.watchLaterPlaylistId) {
+      state.watchLaterPlaylistId = snapshot.watchLaterPlaylistId;
+      persistWatchLaterPlaylistId();
+      changed = true;
+    }
+
+    if (changed) {
+      state.centralCacheLoaded = true;
+      renderPlaylists();
+    }
+
+    return changed;
+  }
+
+  async function fetchCentralCacheSnapshot() {
+    if (!isCentralCacheEnabled()) return null;
+
+    const response = await fetch(`${getCentralCacheBase()}/api/cache/snapshot`, {
+      headers: {
+        Authorization: `Bearer ${state.accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      let reason = '';
+      try {
+        const payload = await response.json();
+        reason = payload?.error || payload?.message || '';
+      } catch {}
+      throw new Error(`Central cache ${response.status}${reason ? `: ${reason}` : ''}`);
+    }
+
+    return response.json();
+  }
+
+  async function restoreCentralCacheSnapshot({ silent = true } = {}) {
+    if (!isCentralCacheEnabled()) return false;
+
+    try {
+      const payload = await fetchCentralCacheSnapshot();
+      const changed = applyCentralCacheSnapshot(payload?.snapshot || {});
+      if (changed && !silent) {
+        showToast('Loaded your centralized cache snapshot.');
+      }
+      return changed;
+    } catch (error) {
+      console.warn('Unable to restore central cache snapshot.', error);
+      return false;
+    }
+  }
+
+  async function syncCentralCacheSnapshot() {
+    if (!isCentralCacheEnabled()) return false;
+    if (centralCacheSyncPromise) return centralCacheSyncPromise;
+
+    centralCacheSyncPromise = (async () => {
+      const response = await fetch(`${getCentralCacheBase()}/api/cache/snapshot`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${state.accessToken}`,
+        },
+        body: JSON.stringify(buildCentralCacheSnapshot()),
+      });
+
+      if (!response.ok) {
+        let reason = '';
+        try {
+          const payload = await response.json();
+          reason = payload?.error || payload?.message || '';
+        } catch {}
+        throw new Error(`Central cache sync ${response.status}${reason ? `: ${reason}` : ''}`);
+      }
+
+      const payload = await response.json();
+      persistCentralCacheSyncTime(payload?.updatedAt || new Date().toISOString());
+      return true;
+    })()
+      .catch((error) => {
+        console.warn('Central cache sync failed.', error);
+        return false;
+      })
+      .finally(() => {
+        centralCacheSyncPromise = null;
+      });
+
+    return centralCacheSyncPromise;
+  }
+
+  function scheduleCentralCacheSync() {
+    if (!isCentralCacheEnabled()) return;
+    if (centralCacheSyncTimer) clearTimeout(centralCacheSyncTimer);
+    centralCacheSyncTimer = setTimeout(() => {
+      syncCentralCacheSnapshot().catch(() => {});
+    }, 1200);
   }
 
   function ensureStateCollectionsHealthy() {
@@ -974,6 +1168,28 @@
       const sanitizedFollowed = state.followedPlaylists.map(sanitizeStoredPlaylist).filter(Boolean);
       if (sanitizedFollowed.length !== state.followedPlaylists.length) {
         state.followedPlaylists = sanitizedFollowed;
+        changed = true;
+      }
+    }
+
+    if (!Array.isArray(state.playlists)) {
+      state.playlists = getInitialPlaylistCache();
+      changed = true;
+    } else {
+      const sanitizedPlaylists = state.playlists.map(sanitizeStoredPlaylist).filter(Boolean);
+      if (sanitizedPlaylists.length !== state.playlists.length) {
+        state.playlists = sanitizedPlaylists;
+        changed = true;
+      }
+    }
+
+    if (!state.playlistVideoCache || typeof state.playlistVideoCache !== 'object' || Array.isArray(state.playlistVideoCache)) {
+      state.playlistVideoCache = getInitialPlaylistVideoCache();
+      changed = true;
+    } else {
+      const sanitizedPlaylistVideoCache = sanitizePlaylistVideoCache(state.playlistVideoCache);
+      if (Object.keys(sanitizedPlaylistVideoCache).length !== Object.keys(state.playlistVideoCache).length) {
+        state.playlistVideoCache = sanitizedPlaylistVideoCache;
         changed = true;
       }
     }
@@ -1654,6 +1870,7 @@
     request?.resolve(resp);
 
     if (request?.interactive) {
+      restoreCentralCacheSnapshot({ silent: true }).catch(() => {});
       fetchUserInfo();
       fetchPlaylists();
       fetchSpecialPlaylists();
@@ -1801,6 +2018,7 @@
         }
       }
       console.error('Playlists error:', e);
+      const restoredCentralCache = await restoreCentralCacheSnapshot({ silent: true });
       const cachedPlaylists = getInitialPlaylistCache();
       state.playlists = Array.isArray(tempPlaylists) && tempPlaylists.length > 0
         ? tempPlaylists.filter(Boolean)
@@ -1811,8 +2029,8 @@
         const message = String(e?.message || '');
         const normalizedMessage = message.toLowerCase();
         const detailedMessage = normalizedMessage.includes('quota')
-          ? (state.playlists.length > 0
-            ? 'YouTube API quota exceeded. Showing cached playlists.'
+          ? ((restoredCentralCache || state.playlists.length > 0)
+            ? `YouTube API quota exceeded. Showing ${restoredCentralCache ? 'central' : 'cached'} playlists.`
             : 'Failed to load playlists: YouTube API quota exceeded.')
           : normalizedMessage.includes('accessnotconfigured')
             ? 'Failed to load playlists: YouTube API is not enabled in the Google project.'
@@ -2956,6 +3174,7 @@
 
     } catch (e) {
       console.error('Video load error:', e);
+      const restoredCentralCache = await restoreCentralCacheSnapshot({ silent: true });
       const cachedEntry = state.playlistVideoCache?.[state.activePlaylistId];
       if (!isSilent && cachedEntry && Array.isArray(cachedEntry.videos) && cachedEntry.videos.length > 0) {
         state.allVideos = cachedEntry.videos;
@@ -2963,7 +3182,12 @@
         state.detectedCategories = new Set(cachedEntry.videos.map((video) => video.category).filter(Boolean));
         renderCategoryChips();
         applyFilters();
-        showToast(isQuotaErrorMessage(e?.message) ? 'YouTube API quota exceeded. Showing cached playlist.' : 'Showing cached playlist data.', 'error');
+        showToast(
+          isQuotaErrorMessage(e?.message)
+            ? `YouTube API quota exceeded. Showing ${restoredCentralCache ? 'central' : 'cached'} playlist.`
+            : 'Showing cached playlist data.',
+          'error'
+        );
       } else if (!isSilent) {
         showToast(isQuotaErrorMessage(e?.message) ? 'Failed to load videos: YouTube API quota exceeded.' : 'Failed to load videos.', 'error');
       }
@@ -4037,6 +4261,7 @@
         state.isInitialLoad = true;
         try {
           await authReadyPromise;
+          await restoreCentralCacheSnapshot({ silent: true });
           await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
@@ -4050,7 +4275,15 @@
 
     authReadyPromise.then(() => {
       if (restored !== true && wasPreviouslyLoggedIn()) {
-        attemptSessionRecovery().catch(() => {});
+        attemptSessionRecovery()
+          .then(async (recovered) => {
+            if (!recovered) return;
+            hide(dom.loginOverlay);
+            show(dom.app);
+            await restoreCentralCacheSnapshot({ silent: true });
+            await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
+          })
+          .catch(() => {});
       }
     });
   }

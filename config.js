@@ -11,6 +11,7 @@
 const CONFIG = {
   CLIENT_ID: '243815206995-4q78gfudru073crceoceppb9tgjbl37b.apps.googleusercontent.com',
   API_KEY: '', // Optional: for public-only access without OAuth
+  CACHE_API_BASE: '', // Optional centralized cache backend, e.g. https://your-worker.example.workers.dev
   SCOPES: 'https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email',
   DISCOVERY_DOC: 'https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest',
   MAX_RESULTS: 50,
