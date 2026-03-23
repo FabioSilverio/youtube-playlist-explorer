@@ -204,20 +204,6 @@
   }
 
   function getInitialNewsChannels() {
-    try {
-      const raw = localStorage.getItem('yt_explorer_news_channels');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const normalized = sanitizeNewsChannels(parsed);
-          localStorage.setItem('yt_explorer_news_channels', JSON.stringify(normalized));
-          return normalized;
-        }
-      }
-    } catch (error) {
-      console.warn('Unable to read news channels from storage.', error);
-    }
-
     localStorage.setItem('yt_explorer_news_channels', JSON.stringify(DEFAULT_NEWS_CHANNELS));
     return DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
   }
@@ -1632,7 +1618,6 @@
       fetchPlaylists();
       fetchSpecialPlaylists();
       fetchTrackedFeed({ background: true });
-      fetchNewsFeed({ background: true });
     }
   }
 
@@ -1724,6 +1709,7 @@
   function isRecoverablePlaylistError(error) {
     const message = String(error?.message || '').toLowerCase();
     return message.includes('401')
+      || message.includes('403')
       || message.includes('no access token')
       || message.includes('google login is not ready');
   }
@@ -3968,7 +3954,6 @@
           await authReadyPromise;
           await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
           await fetchTrackedFeed({ background: true });
-          await fetchNewsFeed({ background: true });
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }
