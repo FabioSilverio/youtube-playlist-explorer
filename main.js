@@ -194,12 +194,29 @@
     return NEWS_TREND_WINDOWS.find((entry) => entry.key === windowKey) || NEWS_TREND_WINDOWS[1];
   }
 
+  function getPublishedAtMs(value) {
+    const ms = new Date(value || 0).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
+  function formatPublishedAt(value) {
+    const publishedAtMs = getPublishedAtMs(value);
+    if (!publishedAtMs) return 'Unknown publish time';
+    return new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(publishedAtMs));
+  }
+
   function isVideoFromToday(video) {
-    const publishedAt = new Date(video?.addedAt || 0);
-    if (Number.isNaN(publishedAt.getTime())) return false;
+    const publishedAtMs = getPublishedAtMs(video?.addedAt);
+    if (!publishedAtMs) return false;
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
-    return publishedAt.getTime() >= startOfToday.getTime();
+    return publishedAtMs >= startOfToday.getTime();
   }
 
   function getTrendingNewsVideos(videos = state?.newsFeedVideos || [], windowKey = state?.activeNewsTrendWindow || '24h') {
@@ -208,12 +225,12 @@
 
     return [...videos]
       .filter((video) => {
-        const publishedAt = new Date(video.addedAt).getTime();
+        const publishedAt = getPublishedAtMs(video.addedAt);
         return publishedAt && (now - publishedAt) <= windowConfig.maxAgeMs;
       })
       .sort((a, b) => {
-        const aAgeHours = Math.max(1, (now - new Date(a.addedAt).getTime()) / (60 * 60 * 1000));
-        const bAgeHours = Math.max(1, (now - new Date(b.addedAt).getTime()) / (60 * 60 * 1000));
+        const aAgeHours = Math.max(1, (now - getPublishedAtMs(a.addedAt)) / (60 * 60 * 1000));
+        const bAgeHours = Math.max(1, (now - getPublishedAtMs(b.addedAt)) / (60 * 60 * 1000));
         const aScore = (a.viewCount || 0) / Math.pow(aAgeHours + 2, 0.8);
         const bScore = (b.viewCount || 0) / Math.pow(bAgeHours + 2, 0.8);
         if (Math.abs(bScore - aScore) > 0.01) return bScore - aScore;
@@ -463,7 +480,9 @@
   }
 
   function timeAgo(dateStr) {
-    const diff = Date.now() - new Date(dateStr).getTime();
+    const publishedAtMs = getPublishedAtMs(dateStr);
+    if (!publishedAtMs) return 'Unknown';
+    const diff = Date.now() - publishedAtMs;
     const d = Math.floor(diff / 86400000);
     if (d < 1) return 'Today';
     if (d === 1) return 'Yesterday';
@@ -898,14 +917,14 @@
 
   function isTrackedVideoNew(video) {
     if (video.sourceType !== 'tracked') return false;
-    const publishedAt = new Date(video.addedAt).getTime();
+    const publishedAt = getPublishedAtMs(video.addedAt);
     const baseline = getTrackedBaselineForVideo(video);
     return publishedAt > baseline;
   }
 
   function isNewsVideoNew(video) {
     if (video.sourceType !== 'news') return false;
-    const publishedAt = new Date(video.addedAt).getTime();
+    const publishedAt = getPublishedAtMs(video.addedAt);
     const baseline = getNewsBaselineForVideo(video);
     return publishedAt > baseline;
   }
@@ -947,7 +966,7 @@
     });
 
     videos.forEach((video) => {
-      const publishedAt = new Date(video.addedAt).getTime();
+      const publishedAt = getPublishedAtMs(video.addedAt);
       if (publishedAt > (baseline.All || 0)) {
         counts.All += 1;
       }
@@ -966,7 +985,7 @@
     const counts = getDefaultNewsSeenAt();
 
     videos.forEach((video) => {
-      const publishedAt = new Date(video.addedAt).getTime();
+      const publishedAt = getPublishedAtMs(video.addedAt);
       if (publishedAt > (baseline.All || 0)) {
         counts.All += 1;
       }
@@ -986,7 +1005,7 @@
     });
 
     getTrendingNewsVideos(videos, '24h').forEach((video) => {
-      const publishedAt = new Date(video.addedAt).getTime();
+      const publishedAt = getPublishedAtMs(video.addedAt);
       if (publishedAt > (baseline.Trending || 0)) {
         counts.Trending += 1;
       }
@@ -1554,7 +1573,7 @@
             tags: detail?.tags || [],
           };
         })
-        .sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
+        .sort((a, b) => getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt));
 
       state.trackedSeenBaseline = baseline;
       state.trackedFeedVideos = mergedVideos;
@@ -1794,7 +1813,7 @@
             viewCount: detail?.viewCount || 0,
           };
         })
-        .sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
+        .sort((a, b) => getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt));
 
       state.newsSeenBaseline = baseline;
       state.newsFeedVideos = mergedVideos;
@@ -2152,6 +2171,21 @@
       </section>
       ${railVideos.length > 0 ? `<section class="feed-rail">${railMarkup}</section>` : ''}
     `;
+
+    const featuredMetaEl = dom.feedShell.querySelector('.feed-featured-meta');
+    if (featuredMetaEl) {
+      const featuredPublishedAt = formatPublishedAt(featuredVideo.addedAt);
+      featuredMetaEl.textContent = featuredPublishedAt + (featuredVideo.newsProgram ? ` • ${featuredVideo.newsProgram}` : '');
+      featuredMetaEl.title = `Published ${featuredPublishedAt}`;
+    }
+
+    dom.feedShell.querySelectorAll('.feed-rail-meta').forEach((metaEl, index) => {
+      const video = railVideos[index];
+      if (!video) return;
+      const railPublishedAt = formatPublishedAt(video.addedAt);
+      metaEl.textContent = `${video.channel} • ${railPublishedAt}${video.viewCount ? ` • ${formatCompactNumber(video.viewCount)} views` : ''}`;
+      metaEl.title = `Published ${railPublishedAt}`;
+    });
 
     show(dom.feedShell);
   }
@@ -2579,15 +2613,15 @@
     if (state.dateFilter !== 'all') {
       const now = Date.now();
       videos = videos.filter((v) => {
-        const added = new Date(v.addedAt).getTime();
+        const publishedAtMs = getPublishedAtMs(v.addedAt);
         switch (state.dateFilter) {
-          case 'week': return now - added <= 7 * 86400000;
-          case 'month': return now - added <= 30 * 86400000;
-          case '3months': return now - added <= 90 * 86400000;
-          case 'year': return now - added <= 365 * 86400000;
+          case 'week': return now - publishedAtMs <= 7 * 86400000;
+          case 'month': return now - publishedAtMs <= 30 * 86400000;
+          case '3months': return now - publishedAtMs <= 90 * 86400000;
+          case 'year': return now - publishedAtMs <= 365 * 86400000;
           case 'custom': {
-            if (state.customDateFrom && added < new Date(state.customDateFrom).getTime()) return false;
-            if (state.customDateTo && added > new Date(state.customDateTo).getTime() + 86400000) return false;
+            if (state.customDateFrom && publishedAtMs < new Date(state.customDateFrom).getTime()) return false;
+            if (state.customDateTo && publishedAtMs > new Date(state.customDateTo).getTime() + 86400000) return false;
             return true;
           }
           default: return true;
@@ -2715,8 +2749,8 @@
       return getTrendingNewsVideos(copy, state.activeNewsTrendWindow);
     }
     switch (state.sortBy) {
-      case 'dateDesc': return copy.sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt));
-      case 'dateAsc': return copy.sort((a, b) => new Date(a.addedAt) - new Date(b.addedAt));
+      case 'dateDesc': return copy.sort((a, b) => getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt));
+      case 'dateAsc': return copy.sort((a, b) => getPublishedAtMs(a.addedAt) - getPublishedAtMs(b.addedAt));
       case 'titleAsc': return copy.sort((a, b) => a.title.localeCompare(b.title));
       case 'titleDesc': return copy.sort((a, b) => b.title.localeCompare(a.title));
       case 'durationAsc': return copy.sort((a, b) => a.duration - b.duration);
@@ -2739,6 +2773,7 @@
       const newsProgramHtml = v.newsProgram
         ? `<div class="video-news-program">${escHtml(v.newsProgram)}</div>`
         : '';
+      const publishedAtLabel = formatPublishedAt(v.addedAt);
       const viewCountHtml = v.viewCount
         ? `<span>${formatCompactNumber(v.viewCount)} views</span>`
         : '';
@@ -2796,6 +2831,7 @@
               ${newsProgramHtml}
               <div class="video-meta-row">
                 <span>${timeAgo(v.addedAt)}</span>
+                <span title="Published ${escHtml(publishedAtLabel)}">${publishedAtLabel}</span>
                 ${viewCountHtml}
                 <span class="video-category-badge">${escHtml(v.category)}</span>
                 ${v.isPodcast ? '<span class="video-category-badge" style="background:rgba(168,85,247,0.12);color:var(--purple);">Podcast</span>' : ''}
