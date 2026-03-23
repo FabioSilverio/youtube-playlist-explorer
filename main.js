@@ -1913,7 +1913,7 @@
         localStorage.removeItem('yt_explorer_session');
         localStorage.setItem('yt_explorer_is_logged_in', 'true');
         updateAuthUi();
-        if (state.centralCacheSessionToken || hasUsableCachedLibrary()) {
+        if (state.centralCacheSessionToken || hasUsableCachedLibrary() || wasPreviouslyLoggedIn()) {
           showCachedLibraryShell('Sign-in was cancelled. Showing cached library instead.');
         } else {
           show(dom.loginOverlay);
@@ -1961,7 +1961,7 @@
       dom.btnLogin.disabled = false;
     }
     
-    if (state.centralCacheSessionToken || hasUsableCachedLibrary()) {
+    if (state.centralCacheSessionToken || hasUsableCachedLibrary() || wasPreviouslyLoggedIn()) {
       showCachedLibraryShell('Session expired. Showing cached library. Sign in to refresh.');
     } else {
       show(dom.loginOverlay);
@@ -4360,7 +4360,7 @@
         setupTokenRefresh();
       } else {
         state.isInitialLoad = false;
-        if (restoredCentralOnly || hasUsableCachedLibrary()) {
+        if (restoredCentralOnly || hasUsableCachedLibrary() || wasPreviouslyLoggedIn()) {
           showCachedLibraryShell('Loaded cached library. Sign in to refresh YouTube data.');
         }
       }
