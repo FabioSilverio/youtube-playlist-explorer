@@ -52,6 +52,12 @@
     { key: '7d', label: 'Last 7d', maxAgeMs: 7 * 24 * 60 * 60 * 1000 },
   ];
 
+  const QUOTA_SAVER_CACHE_TTL_MS = {
+    tracked: 30 * 60 * 1000,
+    news: 60 * 60 * 1000,
+    live: 10 * 60 * 1000,
+  };
+
   const NEWS_LIVE_SEARCHES = [
     { query: 'LIVE MS NOW Morning Joe', label: 'MSNOW', group: 'US News', minViewers: 100, include: ['ms now', 'morning joe'] },
     { query: 'LIVE MSNBC Morning Joe', label: 'MSNBC', group: 'US News', minViewers: 100, include: ['msnbc', 'morning joe'] },
@@ -236,6 +242,59 @@
           },
         ])
     );
+  }
+
+  function sanitizeCachedVideo(video) {
+    if (!video || typeof video !== 'object' || typeof video.id !== 'string' || !video.id.trim()) return null;
+    return {
+      id: video.id,
+      title: typeof video.title === 'string' ? video.title : '',
+      channel: typeof video.channel === 'string' ? video.channel : '',
+      thumbnail: typeof video.thumbnail === 'string' ? video.thumbnail : '',
+      addedAt: typeof video.addedAt === 'string' ? video.addedAt : '',
+      duration: Number(video.duration || 0),
+      durationFormatted: typeof video.durationFormatted === 'string' ? video.durationFormatted : '0:00',
+      category: typeof video.category === 'string' ? video.category : 'Other',
+      isPodcast: Boolean(video.isPodcast),
+      description: typeof video.description === 'string' ? video.description : '',
+      tags: Array.isArray(video.tags) ? video.tags.filter((tag) => typeof tag === 'string').slice(0, 30) : [],
+      sourceType: typeof video.sourceType === 'string' ? video.sourceType : '',
+      trackedChannelId: typeof video.trackedChannelId === 'string' ? video.trackedChannelId : '',
+      trackedChannelHandle: typeof video.trackedChannelHandle === 'string' ? video.trackedChannelHandle : '',
+      trackedGroup: typeof video.trackedGroup === 'string' ? video.trackedGroup : '',
+      newsRegion: typeof video.newsRegion === 'string' ? video.newsRegion : '',
+      newsProgram: typeof video.newsProgram === 'string' ? video.newsProgram : '',
+      viewCount: Number(video.viewCount || 0),
+      isLive: Boolean(video.isLive),
+      isThirdPartyLive: Boolean(video.isThirdPartyLive),
+      liveTopic: typeof video.liveTopic === 'string' ? video.liveTopic : '',
+      liveMinViewers: Number(video.liveMinViewers || 0),
+      viewerCount: Number(video.viewerCount || 0),
+    };
+  }
+
+  function readFeedCache(key) {
+    const parsed = readJsonStorage(key, null);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return {
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      videos: Array.isArray(parsed.videos) ? parsed.videos.map(sanitizeCachedVideo).filter(Boolean) : [],
+    };
+  }
+
+  function persistFeedCache(key, videos) {
+    localStorage.setItem(key, JSON.stringify({
+      updatedAt: new Date().toISOString(),
+      videos: Array.isArray(videos) ? videos : [],
+    }));
+  }
+
+  function getFreshFeedCache(key, ttlMs) {
+    const entry = readFeedCache(key);
+    if (!entry?.updatedAt || !Array.isArray(entry.videos) || entry.videos.length === 0) return null;
+    const ageMs = Date.now() - getPublishedAtMs(entry.updatedAt);
+    if (!Number.isFinite(ageMs) || ageMs > ttlMs) return null;
+    return entry;
   }
 
   function getInitialNewsChannels() {
@@ -525,6 +584,7 @@
     loginOverlay: $('#login-overlay'),
     btnLogin: $('#btn-login'),
     app: $('#app'),
+    btnRefreshView: $('#btn-refresh-view'),
     btnLogout: $('#btn-logout'),
     userAvatar: $('#user-avatar'),
     userName: $('#user-name'),
@@ -1060,6 +1120,31 @@
     renderPlaylists();
     if (message) {
       showToast(message);
+    }
+  }
+
+  function updateRefreshButton() {
+    if (!dom.btnRefreshView) return;
+
+    const needsButton = ['TRACKED_FEED', 'NEWS_FEED', 'NEWS_LIVE', 'DISCOVER'].includes(state.activePlaylistId)
+      || Boolean(state.activePlaylistId && !['CONTINUE_WATCHING'].includes(state.activePlaylistId));
+    dom.btnRefreshView.classList.toggle('hidden', !needsButton);
+
+    if (state.activePlaylistId === 'TRACKED_FEED') {
+      dom.btnRefreshView.textContent = 'Refresh feed';
+      dom.btnRefreshView.title = 'Refresh tracked feed now';
+    } else if (state.activePlaylistId === 'NEWS_FEED') {
+      dom.btnRefreshView.textContent = 'Refresh news';
+      dom.btnRefreshView.title = 'Refresh news feed now';
+    } else if (state.activePlaylistId === 'NEWS_LIVE') {
+      dom.btnRefreshView.textContent = 'Refresh live';
+      dom.btnRefreshView.title = 'Refresh live news now';
+    } else if (state.activePlaylistId === 'DISCOVER') {
+      dom.btnRefreshView.textContent = 'Search again';
+      dom.btnRefreshView.title = 'Run the current discover search again';
+    } else {
+      dom.btnRefreshView.textContent = 'Refresh';
+      dom.btnRefreshView.title = 'Refresh current playlist';
     }
   }
 
@@ -2161,10 +2246,23 @@
     }
   }
 
-  async function fetchTrackedFeed({ background = false } = {}) {
+  async function fetchTrackedFeed({ background = false, force = false } = {}) {
     if (state.isLoading) return;
 
     const baseline = { ...state.trackedSeenAt };
+    const cachedEntry = !force ? getFreshFeedCache('yt_explorer_tracked_feed_cache', QUOTA_SAVER_CACHE_TTL_MS.tracked) : null;
+
+    if (cachedEntry) {
+      state.trackedSeenBaseline = baseline;
+      state.trackedFeedVideos = cachedEntry.videos;
+      recalculateTrackedNewCounts(cachedEntry.videos, baseline);
+      if (!background && state.activePlaylistId === 'TRACKED_FEED') {
+        applyTrackedFeedSelection(true);
+      } else {
+        renderPlaylists();
+      }
+      return;
+    }
 
     if (!background) {
       state.isLoading = true;
@@ -2256,6 +2354,7 @@
 
       state.trackedSeenBaseline = baseline;
       state.trackedFeedVideos = mergedVideos;
+      persistFeedCache('yt_explorer_tracked_feed_cache', mergedVideos);
       recalculateTrackedNewCounts(mergedVideos, baseline);
 
       if (!background && state.activePlaylistId === 'TRACKED_FEED') {
@@ -2265,8 +2364,19 @@
       }
     } catch (error) {
       console.error('Tracked feed error:', error);
+      const staleCache = readFeedCache('yt_explorer_tracked_feed_cache');
+      if (staleCache?.videos?.length) {
+        state.trackedSeenBaseline = baseline;
+        state.trackedFeedVideos = staleCache.videos;
+        recalculateTrackedNewCounts(staleCache.videos, baseline);
+        if (!background && state.activePlaylistId === 'TRACKED_FEED') {
+          applyTrackedFeedSelection(true);
+        } else {
+          renderPlaylists();
+        }
+      }
       if (!background) {
-        showToast('Failed to load tracked channels feed.', 'error');
+        showToast(staleCache?.videos?.length ? 'Tracked feed loaded from cache.' : 'Failed to load tracked channels feed.', 'error');
       }
     } finally {
       if (!background) {
@@ -2411,10 +2521,22 @@
     }
   }
 
-  async function fetchNewsFeed({ background = false } = {}) {
+  async function fetchNewsFeed({ background = false, force = false } = {}) {
     if (state.isFetchingNewsFeed) return;
 
     const baseline = { ...state.newsSeenAt };
+    const cachedEntry = !force ? getFreshFeedCache('yt_explorer_news_feed_cache', QUOTA_SAVER_CACHE_TTL_MS.news) : null;
+    if (cachedEntry) {
+      state.newsSeenBaseline = baseline;
+      state.newsFeedVideos = cachedEntry.videos;
+      recalculateNewsNewCounts(cachedEntry.videos, baseline);
+      if (!background && state.activePlaylistId === 'NEWS_FEED') {
+        applyNewsFeedSelection(true);
+      } else {
+        renderPlaylists();
+      }
+      return;
+    }
     state.isFetchingNewsFeed = true;
 
     if (!background) {
@@ -2518,6 +2640,7 @@
 
       state.newsSeenBaseline = baseline;
       state.newsFeedVideos = mergedVideos;
+      persistFeedCache('yt_explorer_news_feed_cache', mergedVideos);
       recalculateNewsNewCounts(mergedVideos, baseline);
 
       if (!background && state.activePlaylistId === 'NEWS_FEED') {
@@ -2527,9 +2650,21 @@
       }
     } catch (error) {
       console.error('News feed error:', error);
-      renderPlaylists();
+      const staleCache = readFeedCache('yt_explorer_news_feed_cache');
+      if (staleCache?.videos?.length) {
+        state.newsSeenBaseline = baseline;
+        state.newsFeedVideos = staleCache.videos;
+        recalculateNewsNewCounts(staleCache.videos, baseline);
+        if (!background && state.activePlaylistId === 'NEWS_FEED') {
+          applyNewsFeedSelection(true);
+        } else {
+          renderPlaylists();
+        }
+      } else {
+        renderPlaylists();
+      }
       if (!background) {
-        showToast('Failed to load news feed.', 'error');
+        showToast(staleCache?.videos?.length ? 'News feed loaded from cache.' : 'Failed to load news feed.', 'error');
       }
     } finally {
       state.isFetchingNewsFeed = false;
@@ -2540,8 +2675,21 @@
     }
   }
 
-  async function fetchNewsLiveFeed({ background = false } = {}) {
+  async function fetchNewsLiveFeed({ background = false, force = false } = {}) {
     if (state.isFetchingNewsLiveFeed) return;
+    const cachedEntry = !force ? getFreshFeedCache('yt_explorer_news_live_cache', QUOTA_SAVER_CACHE_TTL_MS.live) : null;
+    if (cachedEntry) {
+      state.newsLiveVideos = cachedEntry.videos;
+      if (!background && state.activePlaylistId === 'NEWS_LIVE') {
+        state.allVideos = [...cachedEntry.videos];
+        state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+        renderCategoryChips();
+        applyFilters();
+      } else {
+        renderPlaylists();
+      }
+      return;
+    }
     state.isFetchingNewsLiveFeed = true;
 
     if (!background) {
@@ -2707,6 +2855,7 @@
           }
           return getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt);
         }));
+      persistFeedCache('yt_explorer_news_live_cache', state.newsLiveVideos);
 
       if (!background && state.activePlaylistId === 'NEWS_LIVE') {
         state.allVideos = [...state.newsLiveVideos];
@@ -2718,8 +2867,20 @@
       }
     } catch (error) {
       console.error('Live news feed error:', error);
+      const staleCache = readFeedCache('yt_explorer_news_live_cache');
+      if (staleCache?.videos?.length) {
+        state.newsLiveVideos = staleCache.videos;
+        if (!background && state.activePlaylistId === 'NEWS_LIVE') {
+          state.allVideos = [...staleCache.videos];
+          state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+          renderCategoryChips();
+          applyFilters();
+        } else {
+          renderPlaylists();
+        }
+      }
       if (!background) {
-        showToast('Failed to load live news feed.', 'error');
+        showToast(staleCache?.videos?.length ? 'Live news loaded from cache.' : 'Failed to load live news feed.', 'error');
       }
     } finally {
       state.isFetchingNewsLiveFeed = false;
@@ -2732,6 +2893,7 @@
 
   function renderPlaylists() {
     ensureStateCollectionsHealthy();
+    updateRefreshButton();
     dom.playlistCount.textContent = String(state.playlists.length);
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
@@ -3113,6 +3275,7 @@
     state.allVideos = [];
     state.nextPageToken = null;
     state.detectedCategories = new Set();
+    updateRefreshButton();
 
     // Reset filters
     resetFilters();
@@ -3180,6 +3343,41 @@
   async function selectNewsFeedGroup(group, el) {
     state.activeNewsGroup = group;
     await selectPlaylist('NEWS_FEED', el);
+  }
+
+  async function refreshCurrentView() {
+    if (!state.activePlaylistId || state.isLoading) return;
+
+    if (state.activePlaylistId === 'TRACKED_FEED') {
+      await fetchTrackedFeed({ force: true });
+      return;
+    }
+
+    if (state.activePlaylistId === 'NEWS_FEED') {
+      await fetchNewsFeed({ force: true });
+      return;
+    }
+
+    if (state.activePlaylistId === 'NEWS_LIVE') {
+      await fetchNewsLiveFeed({ force: true });
+      return;
+    }
+
+    if (state.activePlaylistId === 'DISCOVER') {
+      await performYoutubeSearch();
+      return;
+    }
+
+    if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+      state.allVideos = getContinueWatchingVideos();
+      state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+      renderCategoryChips();
+      applyFilters();
+      return;
+    }
+
+    await fetchPlaylists('', true);
+    await loadPlaylistVideos('', false);
   }
 
   // ---- Videos ----
@@ -4124,6 +4322,15 @@
         loadPlaylistVideos(state.nextPageToken);
       }
     });
+
+    if (dom.btnRefreshView) {
+      dom.btnRefreshView.addEventListener('click', () => {
+        refreshCurrentView().catch((error) => {
+          console.error('Refresh current view failed:', error);
+          showToast('Failed to refresh this view.', 'error');
+        });
+      });
+    }
 
     dom.btnOpenYoutube.addEventListener('click', () => {
       if (!state.activeVideo?.id) return;

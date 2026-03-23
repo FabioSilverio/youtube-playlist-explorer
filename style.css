@@ -204,6 +204,7 @@ body {
 .btn-clear-search:hover { color: var(--text-primary); }
 
 .top-bar-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.top-bar-right .btn-text { white-space: nowrap; }
 
 .user-info { display: flex; align-items: center; gap: 8px; }
 .user-avatar { width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--border); }
@@ -1418,6 +1419,7 @@ body {
   .feed-rail-card { grid-template-columns: 96px minmax(0, 1fr); }
   .video-actions-row { margin-left: 0; flex-wrap: wrap; }
   .video-inline-action { flex: 1; justify-content: center; }
+  .top-bar-right { gap: 8px; }
   /* Extra bottom padding to account for mobile nav */
   .main-content { padding: 16px 12px 100px; }
   .sidebar { padding-bottom: 80px; }
