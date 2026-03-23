@@ -52,6 +52,17 @@
     { key: '7d', label: 'Last 7d', maxAgeMs: 7 * 24 * 60 * 60 * 1000 },
   ];
 
+  const NEWS_LIVE_SEARCHES = [
+    { query: 'LIVE MS NOW Morning Joe', label: 'MSNOW', group: 'US News', minViewers: 100, include: ['ms now', 'morning joe'] },
+    { query: 'LIVE MSNBC Morning Joe', label: 'MSNBC', group: 'US News', minViewers: 100, include: ['msnbc', 'morning joe'] },
+    { query: 'LIVE Fox News Fox and Friends', label: 'Fox News', group: 'US News', minViewers: 100, include: ['fox', 'fox and friends'] },
+    { query: 'LIVE Fox News', label: 'Fox News', group: 'US News', minViewers: 150, include: ['fox news', 'fox'] },
+    { query: 'LIVE CNN', label: 'CNN', group: 'US News', minViewers: 150, include: ['cnn'] },
+    { query: 'LIVE BBC News', label: 'BBC News', group: 'UK News', minViewers: 120, include: ['bbc'] },
+    { query: 'LIVE Sky News', label: 'Sky News', group: 'UK News', minViewers: 120, include: ['sky news'] },
+    { query: 'LIVE Newsmax', label: 'Newsmax', group: 'US News', minViewers: 100, include: ['newsmax'] },
+  ];
+
   const NEWS_SHOW_PATTERNS = [
     { program: 'Anderson Cooper 360', matches: ['anderson cooper 360'] },
     { program: 'The Lead', matches: ['the lead with jake tapper', 'the lead'] },
@@ -174,6 +185,54 @@
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
+  }
+
+  function normalizeLiveTitle(value = '') {
+    return normalizeLooseText(value)
+      .replace(/\b(live|stream|streaming|breaking|watch|now|24 7|24x7|hd|official)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function titleMatchesLiveSearch(title = '', searchConfig = {}) {
+    const normalizedTitle = normalizeLooseText(title);
+    const include = Array.isArray(searchConfig.include) ? searchConfig.include : [];
+    const exclude = Array.isArray(searchConfig.exclude) ? searchConfig.exclude : [];
+
+    if (include.length > 0 && !include.some((term) => normalizedTitle.includes(normalizeLooseText(term)))) {
+      return false;
+    }
+
+    if (exclude.length > 0 && exclude.some((term) => normalizedTitle.includes(normalizeLooseText(term)))) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function dedupeLiveVideos(videos = []) {
+    const byId = new Map();
+
+    videos.forEach((video) => {
+      if (!video?.id) return;
+      const existing = byId.get(video.id);
+      if (!existing || (video.viewerCount || 0) > (existing.viewerCount || 0)) {
+        byId.set(video.id, video);
+      }
+    });
+
+    const bySemanticKey = new Map();
+    [...byId.values()].forEach((video) => {
+      const semanticKey = `${normalizeLooseText(video.channel)}|${normalizeLiveTitle(video.title)}`;
+      if (!semanticKey || semanticKey === '|') return;
+
+      const existing = bySemanticKey.get(semanticKey);
+      if (!existing || (video.viewerCount || 0) > (existing.viewerCount || 0)) {
+        bySemanticKey.set(semanticKey, video);
+      }
+    });
+
+    return [...bySemanticKey.values()];
   }
 
   function getNewsRegionGroups(channels = state?.newsChannels || DEFAULT_NEWS_CHANNELS) {
@@ -1871,6 +1930,14 @@
           })
       );
 
+      const externalLiveResponses = await Promise.allSettled(
+        NEWS_LIVE_SEARCHES.map(async (searchConfig) => {
+          const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&eventType=live&type=video&maxResults=8&order=relevance&q=${encodeURIComponent(searchConfig.query)}`;
+          const data = await apiFetch(url);
+          return { searchConfig, items: data.items || [] };
+        })
+      );
+
       const aggregated = [];
       liveResponses.forEach((result) => {
         if (result.status !== 'fulfilled') {
@@ -1898,6 +1965,43 @@
             sourceType: 'newslive',
             newsRegion: channel.group,
             isLive: true,
+            isThirdPartyLive: false,
+            viewerCount: 0,
+            viewCount: 0,
+          });
+        });
+      });
+
+      externalLiveResponses.forEach((result) => {
+        if (result.status !== 'fulfilled') {
+          console.warn('External live news fetch failed:', result.reason);
+          return;
+        }
+
+        const { searchConfig, items } = result.value;
+        items.forEach((item) => {
+          const videoId = item.id?.videoId;
+          if (!videoId) return;
+          if (!titleMatchesLiveSearch(item.snippet?.title || '', searchConfig)) return;
+
+          aggregated.push({
+            id: videoId,
+            title: item.snippet.title,
+            channel: item.snippet.channelTitle || searchConfig.label,
+            thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
+            addedAt: item.snippet.publishedAt,
+            duration: 0,
+            durationFormatted: 'LIVE',
+            category: searchConfig.group,
+            isPodcast: false,
+            description: '',
+            tags: [],
+            sourceType: 'newslive',
+            newsRegion: searchConfig.group,
+            isLive: true,
+            isThirdPartyLive: true,
+            liveTopic: searchConfig.label,
+            liveMinViewers: searchConfig.minViewers,
             viewerCount: 0,
             viewCount: 0,
           });
@@ -1907,6 +2011,11 @@
       const deduped = Array.from(new Map(aggregated.map((video) => [video.id, video])).values());
       const videoIds = deduped.map((video) => video.id).filter(Boolean);
       const detailMap = {};
+      const officialChannelIds = new Set(
+        state.newsChannels
+          .map((channel) => channel.id)
+          .filter((id) => typeof id === 'string' && id.startsWith('UC'))
+      );
 
       for (const ids of chunkArray(videoIds, 50)) {
         const detailUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,liveStreamingDetails,contentDetails&id=${ids.join(',')}&maxResults=50`;
@@ -1921,6 +2030,7 @@
               viewerCount: Number(video.liveStreamingDetails?.concurrentViewers || 0),
               startedAt: video.liveStreamingDetails?.actualStartTime || video.snippet?.publishedAt || '',
               categoryId: video.snippet?.categoryId || '',
+              channelId: video.snippet?.channelId || '',
             };
           });
         } catch (error) {
@@ -1928,7 +2038,7 @@
         }
       }
 
-      state.newsLiveVideos = deduped
+      state.newsLiveVideos = dedupeLiveVideos(deduped
         .map((video) => {
           const detail = detailMap[video.id] || {};
           const startedAt = detail.startedAt || video.addedAt;
@@ -1941,14 +2051,27 @@
             category: detail.categoryId ? (YT_CATEGORIES[detail.categoryId] || video.newsRegion || 'Live News') : (video.newsRegion || 'Live News'),
             viewerCount: detail.viewerCount || 0,
             viewCount: detail.viewCount || 0,
+            isThirdPartyLive: video.isThirdPartyLive && !officialChannelIds.has(detail.channelId || ''),
           };
+        })
+        .filter((video) => {
+          if (!video.isThirdPartyLive) return true;
+          const minViewers = Number(video.liveMinViewers || 0);
+          if ((video.viewerCount || 0) < minViewers) return false;
+          if (!titleMatchesLiveSearch(video.title, {
+            include: NEWS_LIVE_SEARCHES.find((entry) => entry.label === video.liveTopic)?.include || [],
+            exclude: NEWS_LIVE_SEARCHES.find((entry) => entry.label === video.liveTopic)?.exclude || [],
+          })) {
+            return false;
+          }
+          return true;
         })
         .sort((a, b) => {
           if ((b.viewerCount || 0) !== (a.viewerCount || 0)) {
             return (b.viewerCount || 0) - (a.viewerCount || 0);
           }
           return getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt);
-        });
+        }));
 
       if (!background && state.activePlaylistId === 'NEWS_LIVE') {
         state.allVideos = [...state.newsLiveVideos];
@@ -2945,6 +3068,9 @@
       const liveBadgeHtml = v.isLive
         ? '<span class="video-new-badge video-live-badge">Live</span>'
         : '';
+      const relayBadgeHtml = v.isLive && v.isThirdPartyLive
+        ? '<span class="video-category-badge video-relay-badge">Community relay</span>'
+        : '';
       const publishedAtLabel = formatPublishedAt(v.addedAt);
       const viewCountHtml = v.isLive && v.viewerCount
         ? `<span>${formatCompactNumber(v.viewerCount)} watching</span>`
@@ -3008,6 +3134,7 @@
                 <span title="Published ${escHtml(publishedAtLabel)}">${publishedAtLabel}</span>
                 ${viewCountHtml}
                 <span class="video-category-badge">${escHtml(v.category)}</span>
+                ${relayBadgeHtml}
                 ${v.isPodcast ? '<span class="video-category-badge" style="background:rgba(168,85,247,0.12);color:var(--purple);">Podcast</span>' : ''}
               </div>
               ${resumeHtml}

@@ -917,6 +917,11 @@ body {
   box-shadow: 0 10px 20px rgba(255,45,85,0.35);
 }
 
+.video-relay-badge {
+  background: rgba(255, 192, 72, 0.14);
+  color: var(--yellow);
+}
+
 .video-duration-badge.is-live {
   background: rgba(255,45,85,0.92);
 }
