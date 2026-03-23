@@ -2100,6 +2100,9 @@
         ? tempPlaylists.filter(Boolean)
         : cachedPlaylists;
       dom.playlistCount.textContent = String(state.playlists.length);
+      if (state.playlists.length > 0) {
+        persistPlaylistCache();
+      }
       renderPlaylists();
       if (state.accessToken && state.playlists.length > 0 && !restoredCentralCache) {
         scheduleCentralCacheSync();
