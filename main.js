@@ -34,9 +34,11 @@
     { id: 'UC8p1vwvWtl6T73JiExfWs1g', title: 'CBS News', handle: '@CBSNews', group: 'US News' },
     { title: 'PBS NewsHour', handle: '@PBSNewsHour', group: 'US News' },
     { title: 'Bloomberg Television', handle: '@BloombergTV', group: 'US News' },
+    { id: 'UCXs0PlIGUDSXfBaF7j-1euA', title: 'The Don Lemon Show', handle: '@TheDonLemonShow', group: 'US News' },
     { id: 'UChqUTb7kYRX8-EiaN3XFrSQ', title: 'Reuters', handle: '@Reuters', group: 'World News' },
     { id: 'UC52X5wxOL_s5yw0dQk7NtgA', title: 'Associated Press', handle: '@AssociatedPress', group: 'World News' },
     { id: 'UCB87_o2zsNZTrJ9MO6DdM-A', title: 'Al Jazeera English', handle: '@AJEnglish', group: 'World News' },
+    { id: 'UCScvHKXwQyyGXLsoyqF6iHw', title: 'Janta Ka Reporter', handle: '@JantaKaReporter', group: 'World News' },
     { id: 'UC16niRr50-MSBwiO3YDb3RA', title: 'BBC News', handle: '@BBCNews', group: 'UK News' },
     { id: 'UCoMdktPbSTixAyNGwb-UYkQ', title: 'Sky News', handle: '@SkyNews', group: 'UK News' },
     { id: 'UCTrQ7HXWRRxr7OsOtodr2_w', title: 'Channel 4 News', handle: '@Channel4News', group: 'UK News' },
@@ -318,6 +320,7 @@
     // News feed
     newsChannels: getInitialNewsChannels(),
     newsFeedVideos: [],
+    newsLiveVideos: [],
     activeNewsGroup: 'All',
     activeNewsTrendWindow: '24h',
     newsSeenAt: getInitialNewsSeenAt(),
@@ -1329,6 +1332,8 @@
       fetchTrackedFeed({ background: false });
     } else if (state.activePlaylistId === 'NEWS_FEED') {
       fetchNewsFeed({ background: false });
+    } else if (state.activePlaylistId === 'NEWS_LIVE') {
+      fetchNewsLiveFeed({ background: false });
     }
   }
 
@@ -1369,6 +1374,7 @@
       fetchPlaylists();
       fetchTrackedFeed({ background: true });
       fetchNewsFeed({ background: true });
+      fetchNewsLiveFeed({ background: true });
     }
   }
 
@@ -1700,6 +1706,22 @@
     }
   }
 
+  async function ensureNewsChannelsReady() {
+    state.newsChannels = sanitizeNewsChannels(state.newsChannels);
+    persistNewsChannels();
+
+    try {
+      await hydrateNewsChannels();
+    } catch (error) {
+      console.warn('News channel hydration failed, continuing with known channel IDs.', error);
+    }
+
+    if (!state.newsChannels.some((channel) => typeof channel.id === 'string' && channel.id.startsWith('UC'))) {
+      state.newsChannels = DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
+      persistNewsChannels();
+    }
+  }
+
   async function fetchNewsFeed({ background = false } = {}) {
     if (state.isLoading) return;
 
@@ -1714,19 +1736,7 @@
     }
 
     try {
-      state.newsChannels = sanitizeNewsChannels(state.newsChannels);
-      persistNewsChannels();
-
-      try {
-        await hydrateNewsChannels();
-      } catch (error) {
-        console.warn('News channel hydration failed, continuing with known channel IDs.', error);
-      }
-
-      if (!state.newsChannels.some((channel) => typeof channel.id === 'string' && channel.id.startsWith('UC'))) {
-        state.newsChannels = DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
-        persistNewsChannels();
-      }
+      await ensureNewsChannelsReady();
 
       const perChannelLimit = 6;
       const feedResponses = await Promise.allSettled(
@@ -1837,6 +1847,130 @@
     }
   }
 
+  async function fetchNewsLiveFeed({ background = false } = {}) {
+    if (state.isLoading) return;
+
+    if (!background) {
+      state.isLoading = true;
+      show(dom.loadingSpinner);
+      hide(dom.emptyState);
+      hide(dom.loadMoreWrapper);
+      dom.videoGrid.innerHTML = '';
+    }
+
+    try {
+      await ensureNewsChannelsReady();
+
+      const liveResponses = await Promise.allSettled(
+        state.newsChannels
+          .filter((channel) => typeof channel.id === 'string' && channel.id.startsWith('UC'))
+          .map(async (channel) => {
+            const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${encodeURIComponent(channel.id)}&eventType=live&type=video&maxResults=2&order=date`;
+            const data = await apiFetch(url);
+            return { channel, items: data.items || [] };
+          })
+      );
+
+      const aggregated = [];
+      liveResponses.forEach((result) => {
+        if (result.status !== 'fulfilled') {
+          console.warn('Live news fetch failed:', result.reason);
+          return;
+        }
+
+        const { channel, items } = result.value;
+        items.forEach((item) => {
+          const videoId = item.id?.videoId;
+          if (!videoId) return;
+
+          aggregated.push({
+            id: videoId,
+            title: item.snippet.title,
+            channel: item.snippet.channelTitle || channel.title,
+            thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || '',
+            addedAt: item.snippet.publishedAt,
+            duration: 0,
+            durationFormatted: 'LIVE',
+            category: channel.group,
+            isPodcast: false,
+            description: '',
+            tags: [],
+            sourceType: 'newslive',
+            newsRegion: channel.group,
+            isLive: true,
+            viewerCount: 0,
+            viewCount: 0,
+          });
+        });
+      });
+
+      const deduped = Array.from(new Map(aggregated.map((video) => [video.id, video])).values());
+      const videoIds = deduped.map((video) => video.id).filter(Boolean);
+      const detailMap = {};
+
+      for (const ids of chunkArray(videoIds, 50)) {
+        const detailUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,liveStreamingDetails,contentDetails&id=${ids.join(',')}&maxResults=50`;
+        try {
+          const detailData = await apiFetch(detailUrl);
+          (detailData.items || []).forEach((video) => {
+            detailMap[video.id] = {
+              channel: video.snippet?.channelTitle || '',
+              description: video.snippet?.description || '',
+              tags: video.snippet?.tags || [],
+              viewCount: Number(video.statistics?.viewCount || 0),
+              viewerCount: Number(video.liveStreamingDetails?.concurrentViewers || 0),
+              startedAt: video.liveStreamingDetails?.actualStartTime || video.snippet?.publishedAt || '',
+              categoryId: video.snippet?.categoryId || '',
+            };
+          });
+        } catch (error) {
+          console.warn('Live news detail fetch failed for chunk, continuing.', error);
+        }
+      }
+
+      state.newsLiveVideos = deduped
+        .map((video) => {
+          const detail = detailMap[video.id] || {};
+          const startedAt = detail.startedAt || video.addedAt;
+          return {
+            ...video,
+            channel: detail.channel || video.channel,
+            description: detail.description || '',
+            tags: detail.tags || [],
+            addedAt: startedAt,
+            category: detail.categoryId ? (YT_CATEGORIES[detail.categoryId] || video.newsRegion || 'Live News') : (video.newsRegion || 'Live News'),
+            viewerCount: detail.viewerCount || 0,
+            viewCount: detail.viewCount || 0,
+          };
+        })
+        .sort((a, b) => {
+          if ((b.viewerCount || 0) !== (a.viewerCount || 0)) {
+            return (b.viewerCount || 0) - (a.viewerCount || 0);
+          }
+          return getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt);
+        });
+
+      if (!background && state.activePlaylistId === 'NEWS_LIVE') {
+        state.allVideos = [...state.newsLiveVideos];
+        state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+        renderCategoryChips();
+        applyFilters();
+      } else {
+        renderPlaylists();
+      }
+    } catch (error) {
+      console.error('Live news feed error:', error);
+      if (!background) {
+        showToast('Failed to load live news feed.', 'error');
+      }
+    } finally {
+      if (!background) {
+        state.isLoading = false;
+        hide(dom.loadingSpinner);
+      }
+    }
+  }
+
   function renderPlaylists() {
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
@@ -1844,6 +1978,7 @@
     const newsGroups = getNewsGroups();
     const totalTrackedNew = state.trackedNewCounts.All || 0;
     const totalNewsNew = state.newsNewCounts.All || 0;
+    const totalLiveNews = state.newsLiveVideos.length || 0;
     const pinnedOrder = new Map(state.pinnedPlaylists.map((id, index) => [id, index]));
 
     const appendDivider = (label) => {
@@ -1970,6 +2105,21 @@
     });
     dom.sidebarList.appendChild(newsItem);
 
+    const liveNewsItem = document.createElement('div');
+    liveNewsItem.className = 'playlist-item' + (state.activePlaylistId === 'NEWS_LIVE' ? ' active' : '');
+    liveNewsItem.innerHTML = `
+      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+        <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2" ry="2"/></svg>
+      </div>
+      <div class="playlist-meta">
+        <div class="playlist-title">Live Now</div>
+        <div class="playlist-video-count">${totalLiveNews > 0 ? `${totalLiveNews} broadcasts on air` : 'No live broadcasts at the moment'}</div>
+      </div>
+      ${totalLiveNews > 0 ? `<span class="feed-count-badge">${totalLiveNews}</span>` : ''}
+    `;
+    liveNewsItem.addEventListener('click', () => selectPlaylist('NEWS_LIVE', liveNewsItem));
+    dom.sidebarList.appendChild(liveNewsItem);
+
     newsGroups
       .filter((group) => group !== 'All')
       .forEach((group) => {
@@ -2059,6 +2209,7 @@
 
   function getVideoById(videoId) {
     return state.newsFeedVideos.find((video) => video.id === videoId)
+      || state.newsLiveVideos.find((video) => video.id === videoId)
       || state.trackedFeedVideos.find((video) => video.id === videoId)
       || state.allVideos.find((video) => video.id === videoId)
       || state.filteredVideos.find((video) => video.id === videoId)
@@ -2236,6 +2387,12 @@
       show(dom.filterBar);
       dom.filterBar.classList.remove('mobile-open');
       await fetchNewsFeed();
+    } else if (playlistId === 'NEWS_LIVE') {
+      state.searchMode = 'newslive';
+      hide(dom.discoverBar);
+      show(dom.filterBar);
+      dom.filterBar.classList.remove('mobile-open');
+      await fetchNewsLiveFeed();
     } else if (playlistId === 'CONTINUE_WATCHING') {
       state.searchMode = 'continue';
       hide(dom.discoverBar);
@@ -2673,6 +2830,9 @@
     const newsClipVisible = state.activePlaylistId === 'NEWS_FEED'
       ? videos.filter((video) => Boolean(video.newsProgram)).length
       : 0;
+    const liveVisible = state.activePlaylistId === 'NEWS_LIVE'
+      ? videos.filter((video) => Boolean(video.isLive)).length
+      : 0;
     const newsLabel = state.activePlaylistId === 'NEWS_FEED'
       ? (state.activeNewsGroup === 'Trending'
         ? `Trending News (${getTrendingWindowConfig().label})`
@@ -2688,6 +2848,8 @@
 
     if (state.activePlaylistId === 'NEWS_FEED') {
       dom.resultsCount.textContent = `${newsLabel} • ${videos.length} video${videos.length !== 1 ? 's' : ''} • ${newsNewVisible} new • ${newsClipVisible} program clips`;
+    } else if (state.activePlaylistId === 'NEWS_LIVE') {
+      dom.resultsCount.textContent = `Live Now • ${videos.length} broadcast${videos.length !== 1 ? 's' : ''} • ${liveVisible} currently on air`;
     } else if (state.activePlaylistId === 'TRACKED_FEED') {
       dom.resultsCount.textContent = `${videos.length} video${videos.length !== 1 ? 's' : ''} found • ${trackedNewVisible} new since your last visit`;
     }
@@ -2732,6 +2894,13 @@
       if (shouldShowEmpty && state.activeNewsGroup === 'Trending') {
         updateEmptyState('No trending stories right now', 'Try another time window or clear a few filters.');
       }
+    } else if (state.activePlaylistId === 'NEWS_LIVE') {
+      updateEmptyState(
+        shouldShowEmpty ? 'No live news right now' : 'No videos found',
+        state.allVideos.length === 0
+          ? 'None of the monitored news channels are live at this moment.'
+          : 'Try adjusting your filters or search terms.'
+      );
     } else {
       updateEmptyState('No videos found', 'Try adjusting your filters or search terms.');
     }
@@ -2773,8 +2942,13 @@
       const newsProgramHtml = v.newsProgram
         ? `<div class="video-news-program">${escHtml(v.newsProgram)}</div>`
         : '';
+      const liveBadgeHtml = v.isLive
+        ? '<span class="video-new-badge video-live-badge">Live</span>'
+        : '';
       const publishedAtLabel = formatPublishedAt(v.addedAt);
-      const viewCountHtml = v.viewCount
+      const viewCountHtml = v.isLive && v.viewerCount
+        ? `<span>${formatCompactNumber(v.viewerCount)} watching</span>`
+        : v.viewCount
         ? `<span>${formatCompactNumber(v.viewCount)} views</span>`
         : '';
       
@@ -2803,9 +2977,9 @@
             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z M7 7h.01"/></svg>
           </button>
           <img class="video-thumb" src="${v.thumbnail}" alt="${escHtml(v.title)}" loading="lazy" />
-          ${isNewVideo ? '<span class="video-new-badge">New</span>' : ''}
+          ${liveBadgeHtml || (isNewVideo ? '<span class="video-new-badge">New</span>' : '')}
           ${isWatched ? '<span class="watched-badge"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Watched</span>' : ''}
-          <span class="video-duration-badge">${v.durationFormatted}</span>
+          <span class="video-duration-badge ${v.isLive ? 'is-live' : ''}">${v.durationFormatted}</span>
           ${progressHtml}
           <button class="btn-add-playlist" data-vid="${v.id}" title="Save to playlist">
             <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Save
@@ -3391,6 +3565,7 @@
           await Promise.all([fetchUserInfo(), fetchPlaylists()]);
           await fetchTrackedFeed({ background: true });
           await fetchNewsFeed({ background: true });
+          await fetchNewsLiveFeed({ background: true });
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }

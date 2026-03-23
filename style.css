@@ -912,6 +912,15 @@ body {
   box-shadow: 0 10px 20px rgba(255,71,87,0.3);
 }
 
+.video-live-badge {
+  background: linear-gradient(135deg, #ff2d55, #ff5e62);
+  box-shadow: 0 10px 20px rgba(255,45,85,0.35);
+}
+
+.video-duration-badge.is-live {
+  background: rgba(255,45,85,0.92);
+}
+
 .video-progress-track {
   position: absolute;
   left: 0;
