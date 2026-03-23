@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-03-23"
 
 kv_namespaces = [
-  { binding = "CACHE_STORE", id = "YOUR_KV_NAMESPACE_ID" }
+  { binding = "CACHE_STORE", id = "9904336b52284b39a928a9b6b8cc7c14" }
 ]
 
 [vars]
