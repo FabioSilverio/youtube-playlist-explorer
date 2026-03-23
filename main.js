@@ -1617,7 +1617,6 @@
       fetchUserInfo();
       fetchPlaylists();
       fetchSpecialPlaylists();
-      fetchTrackedFeed({ background: true });
     }
   }
 
@@ -1670,7 +1669,21 @@
       }
       throw new Error(`API 401: Unauthorized`);
     }
-    if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+    if (!res.ok) {
+      let apiReason = '';
+      let apiMessage = '';
+
+      try {
+        const errorData = await res.clone().json();
+        apiReason = errorData?.error?.errors?.[0]?.reason || '';
+        apiMessage = errorData?.error?.message || '';
+      } catch (parseError) {
+        console.warn('Unable to parse API error body.', parseError);
+      }
+
+      const detail = [apiReason, apiMessage].filter(Boolean).join(' | ');
+      throw new Error(`API ${res.status}: ${res.statusText}${detail ? ` | ${detail}` : ''}`);
+    }
     return res.json();
   }
 
@@ -1751,7 +1764,16 @@
       dom.playlistCount.textContent = String(state.playlists.length);
       renderPlaylists();
       if (!isSilent) {
-        showToast(state.playlists.length > 0 ? 'Some playlists failed to load.' : 'Failed to load playlists.', 'error');
+        const message = String(e?.message || '');
+        const normalizedMessage = message.toLowerCase();
+        const detailedMessage = normalizedMessage.includes('quota')
+          ? 'Failed to load playlists: YouTube API quota exceeded.'
+          : normalizedMessage.includes('accessnotconfigured')
+            ? 'Failed to load playlists: YouTube API is not enabled in the Google project.'
+            : state.playlists.length > 0
+              ? 'Some playlists failed to load.'
+              : 'Failed to load playlists.';
+        showToast(detailedMessage, 'error');
       }
     }
   }
@@ -3953,7 +3975,6 @@
         try {
           await authReadyPromise;
           await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
-          await fetchTrackedFeed({ background: true });
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }
