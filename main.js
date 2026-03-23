@@ -1419,6 +1419,7 @@
   let sessionRecoveryInFlight = null;
   let authClientReadyPromise = null;
   let authInitialized = false;
+  let authBootstrapTimer = null;
 
   function initAuth() {
     if (authInitialized || typeof google === 'undefined' || !google.accounts?.oauth2) return;
@@ -1481,6 +1482,21 @@
     });
 
     return authClientReadyPromise;
+  }
+
+  function startAuthBootstrap() {
+    if (tokenClient || authBootstrapTimer) return;
+
+    authBootstrapTimer = setInterval(() => {
+      if (typeof google !== 'undefined' && google.accounts?.oauth2) {
+        initAuth();
+      }
+
+      if (tokenClient) {
+        clearInterval(authBootstrapTimer);
+        authBootstrapTimer = null;
+      }
+    }, 100);
   }
 
   function stopTokenTimers() {
@@ -1705,7 +1721,14 @@
   }
 
   // ---- Playlists ----
-  async function fetchPlaylists(pageToken = '', isSilent = false, tempPlaylists = []) {
+  function isRecoverablePlaylistError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('401')
+      || message.includes('no access token')
+      || message.includes('google login is not ready');
+  }
+
+  async function fetchPlaylists(pageToken = '', isSilent = false, tempPlaylists = [], hasRetried = false) {
     try {
       if (!pageToken && !isSilent) {
         state.playlists = []; // Clear on first page 
@@ -1720,7 +1743,7 @@
       tempPlaylists.push(...data.items);
 
       if (data.nextPageToken) {
-        await fetchPlaylists(data.nextPageToken, isSilent, tempPlaylists);
+        await fetchPlaylists(data.nextPageToken, isSilent, tempPlaylists, hasRetried);
       } else {
         // All pages fetched
         state.playlists = tempPlaylists;
@@ -1728,6 +1751,15 @@
         renderPlaylists();
       }
     } catch (e) {
+      if (!hasRetried && isRecoverablePlaylistError(e)) {
+        try {
+          await ensureAuthClientReady(20000);
+          await attemptSessionRecovery();
+          return fetchPlaylists(pageToken, isSilent, tempPlaylists, true);
+        } catch (retryError) {
+          console.warn('Playlist retry after auth recovery failed.', retryError);
+        }
+      }
       console.error('Playlists error:', e);
       state.playlists = Array.isArray(tempPlaylists) ? tempPlaylists.filter(Boolean) : [];
       dom.playlistCount.textContent = String(state.playlists.length);
@@ -3921,9 +3953,10 @@
     ensureStateCollectionsHealthy();
     bindEvents();
     renderPlaylists();
+    startAuthBootstrap();
 
     const restored = tryRestoreSession();
-    const authReadyPromise = ensureAuthClientReady().catch(() => false);
+    const authReadyPromise = ensureAuthClientReady(20000).catch(() => false);
 
     if (restored === true) {
       // Valid token — show the app immediately
