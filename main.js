@@ -118,6 +118,91 @@
     return DEFAULT_TRACKED_CHANNELS.map((channel) => ({ ...channel }));
   }
 
+  function readJsonStorage(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return parsed ?? fallback;
+    } catch (error) {
+      console.warn(`Unable to read ${key} from storage. Resetting to fallback.`, error);
+      return fallback;
+    }
+  }
+
+  function getInitialWatchedVideos() {
+    const parsed = readJsonStorage('yt_explorer_watched', []);
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string' && value.trim()) : [];
+  }
+
+  function sanitizeStoredPlaylist(value) {
+    if (!value || typeof value !== 'object') return null;
+    if (typeof value.id !== 'string' || !value.id.trim()) return null;
+    if (!value.snippet || typeof value.snippet !== 'object') return null;
+
+    return {
+      ...value,
+      id: value.id.trim(),
+      snippet: {
+        ...value.snippet,
+        title: typeof value.snippet.title === 'string' ? value.snippet.title : 'Untitled playlist',
+        thumbnails: value.snippet.thumbnails && typeof value.snippet.thumbnails === 'object'
+          ? value.snippet.thumbnails
+          : {},
+      },
+      contentDetails: {
+        itemCount: Number(value.contentDetails?.itemCount || 0),
+      },
+    };
+  }
+
+  function getInitialFollowedPlaylists() {
+    const parsed = readJsonStorage('yt_explorer_followed', []);
+    return Array.isArray(parsed)
+      ? parsed.map(sanitizeStoredPlaylist).filter(Boolean)
+      : [];
+  }
+
+  function getInitialPinnedPlaylists() {
+    const parsed = readJsonStorage('yt_explorer_pinned_playlists', []);
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter((value) => typeof value === 'string' && value.trim()))]
+      : [];
+  }
+
+  function getInitialVideoTags() {
+    const parsed = readJsonStorage('yt_explorer_tags', {});
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([key]) => typeof key === 'string' && key.trim())
+        .map(([key, value]) => [
+          key,
+          Array.isArray(value) ? value.filter((tag) => typeof tag === 'string' && tag.trim()) : [],
+        ])
+    );
+  }
+
+  function getInitialContinueWatching() {
+    const parsed = readJsonStorage('yt_explorer_continue', {});
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([key, value]) => typeof key === 'string' && key.trim() && value && typeof value === 'object')
+        .map(([key, value]) => [
+          key,
+          {
+            ...value,
+            progress: Number(value.progress || 0),
+            duration: Number(value.duration || 0),
+            updatedAt: value.updatedAt || '',
+          },
+        ])
+    );
+  }
+
   function getInitialNewsChannels() {
     try {
       const raw = localStorage.getItem('yt_explorer_news_channels');
@@ -358,15 +443,15 @@
     sortBy: 'dateDesc',
 
     // Watched State Persistence
-    watchedVideos: new Set(JSON.parse(localStorage.getItem('yt_explorer_watched') || '[]')),
+    watchedVideos: new Set(getInitialWatchedVideos()),
 
     // Category map from YouTube
     categoryMap: {},
     detectedCategories: new Set(),
 
     // Followed Playlists
-    followedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_followed') || '[]'),
-    pinnedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_pinned_playlists') || '[]'),
+    followedPlaylists: getInitialFollowedPlaylists(),
+    pinnedPlaylists: getInitialPinnedPlaylists(),
     watchLaterPlaylistId: localStorage.getItem('yt_explorer_watch_later_id') || '',
 
     // Tracked channels feed
@@ -390,10 +475,10 @@
     newsNewCounts: getDefaultNewsSeenAt(),
 
     // Custom Video Tags { "videoId": ["tag1", "tag2"] }
-    videoTags: JSON.parse(localStorage.getItem('yt_explorer_tags') || '{}'),
+    videoTags: getInitialVideoTags(),
 
     // Continue Watching state
-    continueWatching: JSON.parse(localStorage.getItem('yt_explorer_continue') || '{}'),
+    continueWatching: getInitialContinueWatching(),
     activeVideo: null,
     currentPlayerVideoId: null,
     player: null,
@@ -850,20 +935,59 @@
     localStorage.setItem('yt_explorer_selected_video', JSON.stringify(video));
   }
 
-  function refreshPlaybackStateFromStorage() {
-    try {
-      state.continueWatching = JSON.parse(localStorage.getItem('yt_explorer_continue') || '{}');
-    } catch (error) {
-      console.warn('Unable to refresh continue watching from storage.', error);
-      state.continueWatching = {};
+  function ensureStateCollectionsHealthy() {
+    let changed = false;
+
+    if (!(state.watchedVideos instanceof Set)) {
+      state.watchedVideos = new Set(getInitialWatchedVideos());
+      changed = true;
     }
 
-    try {
-      state.watchedVideos = new Set(JSON.parse(localStorage.getItem('yt_explorer_watched') || '[]'));
-    } catch (error) {
-      console.warn('Unable to refresh watched videos from storage.', error);
-      state.watchedVideos = new Set();
+    if (!Array.isArray(state.followedPlaylists)) {
+      state.followedPlaylists = getInitialFollowedPlaylists();
+      changed = true;
+    } else {
+      const sanitizedFollowed = state.followedPlaylists.map(sanitizeStoredPlaylist).filter(Boolean);
+      if (sanitizedFollowed.length !== state.followedPlaylists.length) {
+        state.followedPlaylists = sanitizedFollowed;
+        changed = true;
+      }
     }
+
+    if (!Array.isArray(state.pinnedPlaylists)) {
+      state.pinnedPlaylists = getInitialPinnedPlaylists();
+      changed = true;
+    } else {
+      const sanitizedPinned = [...new Set(state.pinnedPlaylists.filter((value) => typeof value === 'string' && value.trim()))];
+      if (sanitizedPinned.length !== state.pinnedPlaylists.length) {
+        state.pinnedPlaylists = sanitizedPinned;
+        changed = true;
+      }
+    }
+
+    if (!state.videoTags || typeof state.videoTags !== 'object' || Array.isArray(state.videoTags)) {
+      state.videoTags = getInitialVideoTags();
+      changed = true;
+    }
+
+    if (!state.continueWatching || typeof state.continueWatching !== 'object' || Array.isArray(state.continueWatching)) {
+      state.continueWatching = getInitialContinueWatching();
+      changed = true;
+    }
+
+    if (changed) {
+      persistWatchedVideos();
+      persistFollowedPlaylists();
+      persistPinnedPlaylists();
+      localStorage.setItem('yt_explorer_tags', JSON.stringify(state.videoTags));
+      persistContinueWatching();
+    }
+  }
+
+  function refreshPlaybackStateFromStorage() {
+    state.continueWatching = getInitialContinueWatching();
+    state.watchedVideos = new Set(getInitialWatchedVideos());
+    ensureStateCollectionsHealthy();
 
     renderPlaylists();
 
@@ -1537,6 +1661,8 @@
     try {
       if (!pageToken && !isSilent) {
         state.playlists = []; // Clear on first page 
+        dom.playlistCount.textContent = '0';
+        renderPlaylists();
       }
       
       let url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=${CONFIG.MAX_RESULTS}`;
@@ -1555,6 +1681,12 @@
       }
     } catch (e) {
       console.error('Playlists error:', e);
+      state.playlists = Array.isArray(tempPlaylists) ? tempPlaylists.filter(Boolean) : [];
+      dom.playlistCount.textContent = String(state.playlists.length);
+      renderPlaylists();
+      if (!isSilent) {
+        showToast(state.playlists.length > 0 ? 'Some playlists failed to load.' : 'Failed to load playlists.', 'error');
+      }
     }
   }
 
@@ -1821,6 +1953,7 @@
 
     try {
       await ensureNewsChannelsReady();
+      ensureStateCollectionsHealthy();
 
       const perChannelLimit = 6;
       const feedResponses = await Promise.allSettled(
@@ -1920,6 +2053,7 @@
       }
     } catch (error) {
       console.error('News feed error:', error);
+      renderPlaylists();
       if (!background) {
         showToast('Failed to load news feed.', 'error');
       }
@@ -2123,6 +2257,7 @@
   }
 
   function renderPlaylists() {
+    ensureStateCollectionsHealthy();
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
     const trackedGroups = getTrackedGroups();
@@ -3719,7 +3854,9 @@
   }
 
   async function init() {
+    ensureStateCollectionsHealthy();
     bindEvents();
+    renderPlaylists();
 
     const restored = tryRestoreSession();
 
