@@ -367,6 +367,7 @@
     // Followed Playlists
     followedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_followed') || '[]'),
     pinnedPlaylists: JSON.parse(localStorage.getItem('yt_explorer_pinned_playlists') || '[]'),
+    watchLaterPlaylistId: localStorage.getItem('yt_explorer_watch_later_id') || '',
 
     // Tracked channels feed
     trackedChannels: getInitialTrackedChannels(),
@@ -833,6 +834,14 @@
 
   function persistPinnedPlaylists() {
     localStorage.setItem('yt_explorer_pinned_playlists', JSON.stringify(state.pinnedPlaylists));
+  }
+
+  function persistWatchLaterPlaylistId() {
+    if (state.watchLaterPlaylistId) {
+      localStorage.setItem('yt_explorer_watch_later_id', state.watchLaterPlaylistId);
+    } else {
+      localStorage.removeItem('yt_explorer_watch_later_id');
+    }
   }
 
   function persistSelectedVideo(video) {
@@ -1431,6 +1440,7 @@
     if (request?.interactive) {
       fetchUserInfo();
       fetchPlaylists();
+      fetchSpecialPlaylists();
       fetchTrackedFeed({ background: true });
       fetchNewsFeed({ background: true });
       fetchNewsLiveFeed({ background: true });
@@ -1544,6 +1554,19 @@
       }
     } catch (e) {
       console.error('Playlists error:', e);
+    }
+  }
+
+  async function fetchSpecialPlaylists() {
+    try {
+      const data = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true');
+      const relatedPlaylists = data.items?.[0]?.contentDetails?.relatedPlaylists || {};
+      state.watchLaterPlaylistId = relatedPlaylists.watchLater || state.watchLaterPlaylistId || '';
+      persistWatchLaterPlaylistId();
+      return relatedPlaylists;
+    } catch (error) {
+      console.warn('Unable to fetch special playlists.', error);
+      return null;
     }
   }
 
@@ -2781,6 +2804,14 @@
     btnEl.disabled = true;
 
     try {
+      let resolvedPlaylistId = playlistId;
+      if (playlistId === 'WL') {
+        if (!state.watchLaterPlaylistId) {
+          await fetchSpecialPlaylists();
+        }
+        resolvedPlaylistId = state.watchLaterPlaylistId || playlistId;
+      }
+
       await apiFetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet', {
         method: 'POST',
         headers: {
@@ -2788,7 +2819,7 @@
         },
         body: JSON.stringify({
           snippet: {
-            playlistId,
+            playlistId: resolvedPlaylistId,
             resourceId: {
               kind: 'youtube#video',
               videoId,
@@ -2813,7 +2844,12 @@
       
     } catch (e) {
       console.error('Error adding to playlist:', e);
-      showToast(playlistId === 'WL' ? 'Failed to save to Watch Later.' : 'Failed to add video. Make sure you have permission.', 'error');
+      showToast(
+        playlistId === 'WL'
+          ? 'Failed to save to Watch Later. Try refreshing your session once.'
+          : 'Failed to add video. Make sure you have permission.',
+        'error'
+      );
       btnEl.innerHTML = originalText;
       btnEl.style.background = originalBackground;
       btnEl.disabled = false;
@@ -3689,7 +3725,7 @@
         
         state.isInitialLoad = true;
         try {
-          await Promise.all([fetchUserInfo(), fetchPlaylists()]);
+          await Promise.all([fetchUserInfo(), fetchPlaylists(), fetchSpecialPlaylists()]);
           await fetchTrackedFeed({ background: true });
           await fetchNewsFeed({ background: true });
           await fetchNewsLiveFeed({ background: true });
