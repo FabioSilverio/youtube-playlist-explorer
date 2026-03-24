@@ -620,6 +620,83 @@ body {
   margin-top: 12px;
 }
 
+.feed-hero-compact {
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.feed-trending-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.feed-trending-stat {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+}
+
+.feed-trending-stat strong {
+  display: block;
+  font-size: 1.05rem;
+  margin-bottom: 4px;
+}
+
+.feed-trending-stat span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.feed-trending-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.feed-trending-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.03);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.feed-trending-chip:hover {
+  background: rgba(255,255,255,0.06);
+  transform: translateY(-1px);
+}
+
+.feed-trending-chip-rank {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.feed-trending-chip-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.feed-trending-chip-meta {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
 .feed-tab,
 .feed-subtab {
   border: 1px solid rgba(255,255,255,0.08);
@@ -863,6 +940,11 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 24px 16px;
+}
+
+.video-grid.is-news-trending {
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 28px 18px;
 }
 
 .video-card {
@@ -1400,6 +1482,7 @@ body {
   .user-name { display: none; }
   .feed-hero { grid-template-columns: 1fr; }
   .feed-rail { grid-template-columns: 1fr 1fr; }
+  .feed-trending-summary { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
@@ -1427,6 +1510,7 @@ body {
   .feed-title { font-size: 1.55rem; }
   .feed-rail { grid-template-columns: 1fr; }
   .feed-rail-card { grid-template-columns: 96px minmax(0, 1fr); }
+  .feed-trending-chips { grid-template-columns: 1fr; }
   .video-actions-row { margin-left: 0; flex-wrap: wrap; }
   .video-inline-action { flex: 1; justify-content: center; }
   .top-bar-right { gap: 8px; }

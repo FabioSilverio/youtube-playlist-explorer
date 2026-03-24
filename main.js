@@ -60,11 +60,20 @@
     live: 10 * 60 * 1000,
   };
 
+  const FEED_BACKGROUND_REFRESH_MS = {
+    tracked: 15 * 60 * 1000,
+    news: 10 * 60 * 1000,
+    live: 3 * 60 * 1000,
+  };
+
   const NEWS_LIVE_SEARCHES = [
-    { query: 'LIVE MS NOW Morning Joe', label: 'MSNOW', group: 'US News', minViewers: 100, include: ['ms now', 'morning joe'] },
-    { query: 'LIVE MSNBC Morning Joe', label: 'MSNBC', group: 'US News', minViewers: 100, include: ['msnbc', 'morning joe'] },
-    { query: 'LIVE Fox News Fox and Friends', label: 'Fox News', group: 'US News', minViewers: 100, include: ['fox', 'fox and friends'] },
-    { query: 'LIVE Fox News', label: 'Fox News', group: 'US News', minViewers: 150, include: ['fox news', 'fox'] },
+    { query: 'LIVE MS NOW Morning Joe', label: 'MSNOW', group: 'US News', minViewers: 75, include: ['ms now', 'morning joe'] },
+    { query: 'LIVE MSNBC Live Morning Joe', label: 'MSNOW', group: 'US News', minViewers: 75, include: ['msnbc', 'morning joe'] },
+    { query: 'LIVE Morning Joe full show', label: 'MSNOW', group: 'US News', minViewers: 75, include: ['morning joe'] },
+    { query: 'LIVE Fox News Fox and Friends', label: 'Fox News', group: 'US News', minViewers: 90, include: ['fox', 'fox and friends'] },
+    { query: 'LIVE Fox & Friends full show', label: 'Fox News', group: 'US News', minViewers: 90, include: ['fox', 'friends'] },
+    { query: 'LIVE Fox News full show', label: 'Fox News', group: 'US News', minViewers: 90, include: ['fox'] },
+    { query: 'LIVE Fox breaking news full show', label: 'Fox News', group: 'US News', minViewers: 90, include: ['fox'] },
     { query: 'LIVE CNN', label: 'CNN', group: 'US News', minViewers: 150, include: ['cnn'] },
     { query: 'LIVE BBC News', label: 'BBC News', group: 'UK News', minViewers: 120, include: ['bbc'] },
     { query: 'LIVE Sky News', label: 'Sky News', group: 'UK News', minViewers: 120, include: ['sky news'] },
@@ -300,6 +309,12 @@
     return entry;
   }
 
+  function getFeedCacheAgeMs(entry) {
+    if (!entry?.updatedAt) return Number.POSITIVE_INFINITY;
+    const ageMs = Date.now() - getPublishedAtMs(entry.updatedAt);
+    return Number.isFinite(ageMs) ? ageMs : Number.POSITIVE_INFINITY;
+  }
+
   function getInitialNewsChannels() {
     const fallback = DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
     try {
@@ -375,7 +390,7 @@
 
   function normalizeLiveTitle(value = '') {
     return normalizeLooseText(value)
-      .replace(/\b(live|stream|streaming|breaking|watch|now|24 7|24x7|hd|official)\b/g, ' ')
+      .replace(/\b(live|stream|streaming|breaking|watch|now|24 7|24x7|hd|official|full|show|news|today|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|\d{1,4})\b/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -409,7 +424,9 @@
 
     const bySemanticKey = new Map();
     [...byId.values()].forEach((video) => {
-      const semanticKey = `${normalizeLooseText(video.channel)}|${normalizeLiveTitle(video.title)}`;
+      const semanticKey = video.isThirdPartyLive
+        ? `${normalizeLooseText(video.liveTopic || video.newsRegion || 'relay')}|${normalizeLiveTitle(video.title)}`
+        : `${normalizeLooseText(video.channel)}|${normalizeLiveTitle(video.title)}`;
       if (!semanticKey || semanticKey === '|') return;
 
       const existing = bySemanticKey.get(semanticKey);
@@ -479,6 +496,13 @@
     const minPublishedAt = windowConfig.key === 'today'
       ? startOfTodayMs
       : now - (windowConfig.maxAgeMs || 0);
+    const candidateLimitMap = {
+      '1h': 14,
+      today: 28,
+      '24h': 40,
+      '7d': 60,
+    };
+    const candidateLimit = candidateLimitMap[windowConfig.key] || 28;
 
     return [...videos]
       .filter((video) => {
@@ -489,23 +513,31 @@
         }
         return publishedAt >= minPublishedAt;
       })
+      .map((video) => {
+        const publishedAtMs = getPublishedAtMs(video.addedAt);
+        const ageHours = Math.max(0.5, (now - publishedAtMs) / (60 * 60 * 1000));
+        const viewScore = Math.log10((video.viewCount || 0) + 1) * 75;
+        const commentScore = Math.log10(((video.commentCount || 0) * 12) + 1) * 48;
+        const recencyBoost = Math.max(0, 26 - ageHours * 2.8);
+        const programBoost = video.newsProgram ? 6 : 0;
+        return {
+          ...video,
+          __publishedAtMs: publishedAtMs,
+          __trendScore: (viewScore + commentScore + recencyBoost + programBoost) / Math.pow(ageHours + 1, 0.42),
+        };
+      })
       .sort((a, b) => {
-        const aAgeHours = Math.max(0.5, (now - getPublishedAtMs(a.addedAt)) / (60 * 60 * 1000));
-        const bAgeHours = Math.max(0.5, (now - getPublishedAtMs(b.addedAt)) / (60 * 60 * 1000));
-        const aViewScore = Math.log10((a.viewCount || 0) + 1) * 75;
-        const bViewScore = Math.log10((b.viewCount || 0) + 1) * 75;
-        const aCommentScore = Math.log10(((a.commentCount || 0) * 12) + 1) * 48;
-        const bCommentScore = Math.log10(((b.commentCount || 0) * 12) + 1) * 48;
-        const aRecencyBoost = Math.max(0, 26 - aAgeHours * 2.8);
-        const bRecencyBoost = Math.max(0, 26 - bAgeHours * 2.8);
-        const aProgramBoost = a.newsProgram ? 6 : 0;
-        const bProgramBoost = b.newsProgram ? 6 : 0;
-        const aScore = (aViewScore + aCommentScore + aRecencyBoost + aProgramBoost) / Math.pow(aAgeHours + 1, 0.42);
-        const bScore = (bViewScore + bCommentScore + bRecencyBoost + bProgramBoost) / Math.pow(bAgeHours + 1, 0.42);
-        if (Math.abs(bScore - aScore) > 0.01) return bScore - aScore;
+        if (Math.abs(b.__trendScore - a.__trendScore) > 0.01) return b.__trendScore - a.__trendScore;
         if ((b.commentCount || 0) !== (a.commentCount || 0)) return (b.commentCount || 0) - (a.commentCount || 0);
         return (b.viewCount || 0) - (a.viewCount || 0);
-      });
+      })
+      .slice(0, candidateLimit)
+      .sort((a, b) => {
+        if (b.__publishedAtMs !== a.__publishedAtMs) return b.__publishedAtMs - a.__publishedAtMs;
+        if (Math.abs(b.__trendScore - a.__trendScore) > 0.01) return b.__trendScore - a.__trendScore;
+        return (b.viewCount || 0) - (a.viewCount || 0);
+      })
+      .map(({ __publishedAtMs, __trendScore, ...video }) => video);
   }
 
   function formatCompactNumber(value) {
@@ -2766,15 +2798,27 @@
     if (state.isFetchingNewsFeed) return;
 
     const baseline = { ...state.newsSeenAt };
-    const cachedEntry = !force ? getFreshFeedCache('yt_explorer_news_feed_cache', QUOTA_SAVER_CACHE_TTL_MS.news) : null;
+    const rawCacheEntry = !force ? readFeedCache('yt_explorer_news_feed_cache') : null;
+    const cacheAgeMs = getFeedCacheAgeMs(rawCacheEntry);
+    const cachedEntry = rawCacheEntry
+      && Array.isArray(rawCacheEntry.videos)
+      && rawCacheEntry.videos.length > 0
+      && cacheAgeMs <= QUOTA_SAVER_CACHE_TTL_MS.news
+      ? rawCacheEntry
+      : null;
     if (cachedEntry) {
       state.newsSeenBaseline = baseline;
       state.newsFeedVideos = cachedEntry.videos;
       recalculateNewsNewCounts(cachedEntry.videos, baseline);
-      if (!background && state.activePlaylistId === 'NEWS_FEED') {
-        applyNewsFeedSelection(true);
+      if (state.activePlaylistId === 'NEWS_FEED') {
+        applyNewsFeedSelection(!background);
       } else {
         renderPlaylists();
+      }
+      if (!force && cacheAgeMs >= FEED_BACKGROUND_REFRESH_MS.news && navigator.onLine !== false) {
+        setTimeout(() => {
+          fetchNewsFeed({ background: true, force: true }).catch(() => {});
+        }, 0);
       }
       return;
     }
@@ -2886,8 +2930,8 @@
       persistFeedCache('yt_explorer_news_feed_cache', mergedVideos);
       recalculateNewsNewCounts(mergedVideos, baseline);
 
-      if (!background && state.activePlaylistId === 'NEWS_FEED') {
-        applyNewsFeedSelection(true);
+      if (state.activePlaylistId === 'NEWS_FEED') {
+        applyNewsFeedSelection(!background);
       } else {
         renderPlaylists();
       }
@@ -2898,8 +2942,8 @@
         state.newsSeenBaseline = baseline;
         state.newsFeedVideos = staleCache.videos;
         recalculateNewsNewCounts(staleCache.videos, baseline);
-        if (!background && state.activePlaylistId === 'NEWS_FEED') {
-          applyNewsFeedSelection(true);
+        if (state.activePlaylistId === 'NEWS_FEED') {
+          applyNewsFeedSelection(!background);
         } else {
           renderPlaylists();
         }
@@ -2920,16 +2964,28 @@
 
   async function fetchNewsLiveFeed({ background = false, force = false } = {}) {
     if (state.isFetchingNewsLiveFeed) return;
-    const cachedEntry = !force ? getFreshFeedCache('yt_explorer_news_live_cache', QUOTA_SAVER_CACHE_TTL_MS.live) : null;
+    const rawCacheEntry = !force ? readFeedCache('yt_explorer_news_live_cache') : null;
+    const cacheAgeMs = getFeedCacheAgeMs(rawCacheEntry);
+    const cachedEntry = rawCacheEntry
+      && Array.isArray(rawCacheEntry.videos)
+      && rawCacheEntry.videos.length > 0
+      && cacheAgeMs <= QUOTA_SAVER_CACHE_TTL_MS.live
+      ? rawCacheEntry
+      : null;
     if (cachedEntry) {
       state.newsLiveVideos = cachedEntry.videos;
-      if (!background && state.activePlaylistId === 'NEWS_LIVE') {
+      if (state.activePlaylistId === 'NEWS_LIVE') {
         state.allVideos = [...cachedEntry.videos];
         state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
         renderCategoryChips();
         applyFilters();
       } else {
         renderPlaylists();
+      }
+      if (!force && cacheAgeMs >= FEED_BACKGROUND_REFRESH_MS.live && navigator.onLine !== false) {
+        setTimeout(() => {
+          fetchNewsLiveFeed({ background: true, force: true }).catch(() => {});
+        }, 0);
       }
       return;
     }
@@ -2957,8 +3013,8 @@
       );
 
       const externalLiveResponses = await Promise.allSettled(
-        NEWS_LIVE_SEARCHES.map(async (searchConfig) => {
-          const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&eventType=live&type=video&maxResults=8&order=relevance&q=${encodeURIComponent(searchConfig.query)}`;
+          NEWS_LIVE_SEARCHES.map(async (searchConfig) => {
+          const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&eventType=live&type=video&maxResults=12&order=relevance&q=${encodeURIComponent(searchConfig.query)}`;
           const data = await apiFetch(url);
           return { searchConfig, items: data.items || [] };
         })
@@ -3100,7 +3156,7 @@
         }));
       persistFeedCache('yt_explorer_news_live_cache', state.newsLiveVideos);
 
-      if (!background && state.activePlaylistId === 'NEWS_LIVE') {
+      if (state.activePlaylistId === 'NEWS_LIVE') {
         state.allVideos = [...state.newsLiveVideos];
         state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
         renderCategoryChips();
@@ -3393,6 +3449,7 @@
     }
 
     const isNewsFeed = state.activePlaylistId === 'NEWS_FEED';
+    const isTrendingFeed = isNewsFeed && state.activeNewsGroup === 'Trending';
     const sourceVideos = [...state.filteredVideos];
 
     if (!sourceVideos.length) {
@@ -3417,7 +3474,7 @@
       : `${state.trackedChannels.length} channels tracked for your daily catch-up`;
     const kicker = isNewsFeed
       ? (state.activeNewsGroup === 'Trending'
-        ? `Most watched and discussed in ${getTrendingWindowConfig().label.toLowerCase()}`
+        ? `Most watched and discussed, ordered newest first for ${getTrendingWindowConfig().label.toLowerCase()}`
         : state.activeNewsGroup === 'Today'
           ? 'Fresh uploads from today'
           : 'Live desk')
@@ -3439,7 +3496,7 @@
           >${escHtml(group)}</button>
         `).join('');
 
-    const trendButtons = isNewsFeed && state.activeNewsGroup === 'Trending'
+    const trendButtons = isTrendingFeed
       ? `
         <div class="feed-subtabs">
           ${NEWS_TREND_WINDOWS.map((entry) => `
@@ -3452,6 +3509,46 @@
         </div>
       `
       : '';
+
+    if (isTrendingFeed) {
+      const trendingCards = sourceVideos.slice(0, 4).map((video) => `
+        <button type="button" class="feed-trending-chip" data-open-video="${video.id}">
+          <span class="feed-trending-chip-rank">${formatCompactNumber(video.viewCount || 0)} views</span>
+          <span class="feed-trending-chip-title">${escHtml(video.title)}</span>
+          <span class="feed-trending-chip-meta">${escHtml(video.channel)} • ${formatPublishedAt(video.addedAt)}${video.commentCount ? ` • ${formatCompactNumber(video.commentCount)} comments` : ''}</span>
+        </button>
+      `).join('');
+
+      dom.feedShell.innerHTML = `
+        <section class="feed-hero feed-hero-compact is-news-trending">
+          <div class="feed-hero-copy">
+            <div class="feed-kicker">${escHtml(kicker)}</div>
+            <h2 class="feed-title">${escHtml(mainTitle)}</h2>
+            <p class="feed-subtitle">${escHtml(subtitle)}</p>
+            <div class="feed-tabs">${tabButtons}</div>
+            ${trendButtons}
+            <div class="feed-trending-summary">
+              <div class="feed-trending-stat">
+                <strong>${sourceVideos.length}</strong>
+                <span>stories in this window</span>
+              </div>
+              <div class="feed-trending-stat">
+                <strong>${state.newsChannels.length}</strong>
+                <span>channels monitored</span>
+              </div>
+              <div class="feed-trending-stat">
+                <strong>${getTrendingWindowConfig().label}</strong>
+                <span>ranking window</span>
+              </div>
+            </div>
+            ${trendingCards ? `<div class="feed-trending-chips">${trendingCards}</div>` : ''}
+          </div>
+        </section>
+      `;
+
+      show(dom.feedShell);
+      return;
+    }
 
     const railMarkup = railVideos.map((video, index) => `
       <button type="button" class="feed-rail-card" data-open-video="${video.id}">
@@ -3505,6 +3602,14 @@
     });
 
     show(dom.feedShell);
+  }
+
+  function refreshActiveFeedOnReturn() {
+    if (state.activePlaylistId === 'NEWS_FEED') {
+      fetchNewsFeed({ background: true }).catch(() => {});
+    } else if (state.activePlaylistId === 'NEWS_LIVE') {
+      fetchNewsLiveFeed({ background: true }).catch(() => {});
+    }
   }
 
   async function selectPlaylist(playlistId, el) {
@@ -4170,6 +4275,7 @@
   }
 
   function renderVideos() {
+    dom.videoGrid.classList.toggle('is-news-trending', state.activePlaylistId === 'NEWS_FEED' && state.activeNewsGroup === 'Trending');
     dom.videoGrid.innerHTML = '';
     state.filteredVideos.forEach((v, i) => {
       const isWatched = state.watchedVideos.has(v.id);
@@ -4707,16 +4813,19 @@
 
     window.addEventListener('pageshow', () => {
       refreshPlaybackStateFromStorage();
+      refreshActiveFeedOnReturn();
       refreshSessionOnReturn().catch(() => {});
     });
 
     window.addEventListener('focus', () => {
       refreshPlaybackStateFromStorage();
+      refreshActiveFeedOnReturn();
       refreshSessionOnReturn().catch(() => {});
     });
 
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
+        refreshActiveFeedOnReturn();
         refreshSessionOnReturn().catch(() => {});
       }
     });
