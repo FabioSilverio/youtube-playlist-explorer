@@ -35,6 +35,7 @@
     { id: 'UC2s0uKOc2WgB9eGta7cUUEA', title: 'PBS NewsHour', handle: '@PBSNewsHour', group: 'US News' },
     { id: 'UCIALMKvObZNtJ6AmdCLP7Lg', title: 'Bloomberg Television', handle: '@markets', group: 'US News' },
     { id: 'UCXs0PlIGUDSXfBaF7j-1euA', title: 'The Don Lemon Show', handle: '@TheDonLemonShow', group: 'US News' },
+    { id: 'UCDRIjKy6eZOvKtOELtTdeUA', title: 'Breaking Points', handle: '@breakingpoints', group: 'US News' },
     { id: 'UChqUTb7kYRX8-EiaN3XFrSQ', title: 'Reuters', handle: '@Reuters', group: 'World News' },
     { id: 'UC52X5wxOL_s5yw0dQk7NtgA', title: 'Associated Press', handle: '@AssociatedPress', group: 'World News' },
     { id: 'UCB87_o2zsNZTrJ9MO6DdM-A', title: 'Al Jazeera English', handle: '@AJEnglish', group: 'World News' },
@@ -48,6 +49,7 @@
   const NEWS_SPECIAL_GROUPS = ['Today', 'Trending', 'Program Clips'];
   const NEWS_TREND_WINDOWS = [
     { key: '1h', label: 'Last hour', maxAgeMs: 60 * 60 * 1000 },
+    { key: 'today', label: 'Since midnight', maxAgeMs: null },
     { key: '24h', label: 'Last 24h', maxAgeMs: 24 * 60 * 60 * 1000 },
     { key: '7d', label: 'Last 7d', maxAgeMs: 7 * 24 * 60 * 60 * 1000 },
   ];
@@ -265,6 +267,7 @@
       newsRegion: typeof video.newsRegion === 'string' ? video.newsRegion : '',
       newsProgram: typeof video.newsProgram === 'string' ? video.newsProgram : '',
       viewCount: Number(video.viewCount || 0),
+      commentCount: Number(video.commentCount || 0),
       isLive: Boolean(video.isLive),
       isThirdPartyLive: Boolean(video.isThirdPartyLive),
       liveTopic: typeof video.liveTopic === 'string' ? video.liveTopic : '',
@@ -298,8 +301,26 @@
   }
 
   function getInitialNewsChannels() {
-    localStorage.setItem('yt_explorer_news_channels', JSON.stringify(DEFAULT_NEWS_CHANNELS));
-    return DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
+    const fallback = DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
+    try {
+      const raw = localStorage.getItem('yt_explorer_news_channels');
+      if (!raw) {
+        localStorage.setItem('yt_explorer_news_channels', JSON.stringify(fallback));
+        return fallback;
+      }
+
+      const parsed = JSON.parse(raw);
+      const sanitized = sanitizeNewsChannels(parsed);
+      if (!sanitized.length) {
+        localStorage.setItem('yt_explorer_news_channels', JSON.stringify(fallback));
+        return fallback;
+      }
+      return sanitized;
+    } catch (error) {
+      console.warn('Unable to read news channels from storage.', error);
+      localStorage.setItem('yt_explorer_news_channels', JSON.stringify(fallback));
+      return fallback;
+    }
   }
 
   function getInitialTrackedSeenAt() {
@@ -315,13 +336,13 @@
     }
   }
 
-  function getDefaultNewsSeenAt() {
+  function getDefaultNewsSeenAt(channels = DEFAULT_NEWS_CHANNELS) {
     const defaults = { All: 0 };
     NEWS_SPECIAL_GROUPS.forEach((group) => {
       defaults[group] = 0;
     });
-    DEFAULT_NEWS_CHANNELS.forEach((channel) => {
-      defaults[channel.group || 'World News'] = 0;
+    getNewsRegionGroups(channels).forEach((group) => {
+      defaults[group || 'World News'] = 0;
     });
     return defaults;
   }
@@ -400,7 +421,7 @@
     return [...bySemanticKey.values()];
   }
 
-  function getNewsRegionGroups(channels = state?.newsChannels || DEFAULT_NEWS_CHANNELS) {
+  function getNewsRegionGroups(channels = DEFAULT_NEWS_CHANNELS) {
     return [...new Set((channels || []).map((channel) => channel.group || 'World News'))].sort((a, b) => {
       const preferredOrder = ['US News', 'UK News', 'World News'];
       const aIndex = preferredOrder.indexOf(a);
@@ -416,13 +437,19 @@
     return ['All', 'Today', 'Trending', ...getNewsRegionGroups(), 'Program Clips'];
   }
 
-  function getTrendingWindowConfig(windowKey = state?.activeNewsTrendWindow || '24h') {
+  function getTrendingWindowConfig(windowKey = state?.activeNewsTrendWindow || 'today') {
     return NEWS_TREND_WINDOWS.find((entry) => entry.key === windowKey) || NEWS_TREND_WINDOWS[1];
   }
 
   function getPublishedAtMs(value) {
     const ms = new Date(value || 0).getTime();
     return Number.isFinite(ms) ? ms : 0;
+  }
+
+  function getStartOfTodayMs(referenceMs = Date.now()) {
+    const start = new Date(referenceMs);
+    start.setHours(0, 0, 0, 0);
+    return start.getTime();
   }
 
   function formatPublishedAt(value) {
@@ -445,21 +472,38 @@
     return publishedAtMs >= startOfToday.getTime();
   }
 
-  function getTrendingNewsVideos(videos = state?.newsFeedVideos || [], windowKey = state?.activeNewsTrendWindow || '24h') {
+  function getTrendingNewsVideos(videos = state?.newsFeedVideos || [], windowKey = state?.activeNewsTrendWindow || 'today') {
     const windowConfig = getTrendingWindowConfig(windowKey);
     const now = Date.now();
+    const startOfTodayMs = getStartOfTodayMs(now);
+    const minPublishedAt = windowConfig.key === 'today'
+      ? startOfTodayMs
+      : now - (windowConfig.maxAgeMs || 0);
 
     return [...videos]
       .filter((video) => {
         const publishedAt = getPublishedAtMs(video.addedAt);
-        return publishedAt && (now - publishedAt) <= windowConfig.maxAgeMs;
+        if (!publishedAt) return false;
+        if (windowConfig.key === 'today') {
+          return publishedAt >= startOfTodayMs;
+        }
+        return publishedAt >= minPublishedAt;
       })
       .sort((a, b) => {
-        const aAgeHours = Math.max(1, (now - getPublishedAtMs(a.addedAt)) / (60 * 60 * 1000));
-        const bAgeHours = Math.max(1, (now - getPublishedAtMs(b.addedAt)) / (60 * 60 * 1000));
-        const aScore = (a.viewCount || 0) / Math.pow(aAgeHours + 2, 0.8);
-        const bScore = (b.viewCount || 0) / Math.pow(bAgeHours + 2, 0.8);
+        const aAgeHours = Math.max(0.5, (now - getPublishedAtMs(a.addedAt)) / (60 * 60 * 1000));
+        const bAgeHours = Math.max(0.5, (now - getPublishedAtMs(b.addedAt)) / (60 * 60 * 1000));
+        const aViewScore = Math.log10((a.viewCount || 0) + 1) * 75;
+        const bViewScore = Math.log10((b.viewCount || 0) + 1) * 75;
+        const aCommentScore = Math.log10(((a.commentCount || 0) * 12) + 1) * 48;
+        const bCommentScore = Math.log10(((b.commentCount || 0) * 12) + 1) * 48;
+        const aRecencyBoost = Math.max(0, 26 - aAgeHours * 2.8);
+        const bRecencyBoost = Math.max(0, 26 - bAgeHours * 2.8);
+        const aProgramBoost = a.newsProgram ? 6 : 0;
+        const bProgramBoost = b.newsProgram ? 6 : 0;
+        const aScore = (aViewScore + aCommentScore + aRecencyBoost + aProgramBoost) / Math.pow(aAgeHours + 1, 0.42);
+        const bScore = (bViewScore + bCommentScore + bRecencyBoost + bProgramBoost) / Math.pow(bAgeHours + 1, 0.42);
         if (Math.abs(bScore - aScore) > 0.01) return bScore - aScore;
+        if ((b.commentCount || 0) !== (a.commentCount || 0)) return (b.commentCount || 0) - (a.commentCount || 0);
         return (b.viewCount || 0) - (a.viewCount || 0);
       });
   }
@@ -548,7 +592,7 @@
     newsFeedVideos: [],
     newsLiveVideos: [],
     activeNewsGroup: 'All',
-    activeNewsTrendWindow: '24h',
+    activeNewsTrendWindow: 'today',
     isFetchingNewsFeed: false,
     isFetchingNewsLiveFeed: false,
     newsSeenAt: getInitialNewsSeenAt(),
@@ -648,6 +692,7 @@
     btnCloseModal: $('#btn-close-modal'),
 
     btnFollowPlaylist: $('#btn-follow-playlist'),
+    btnManageNews: $('#btn-manage-news'),
     btnManageTracked: $('#btn-manage-tracked'),
     followModal: $('#follow-modal'),
     btnCloseFollowModal: $('#btn-close-follow-modal'),
@@ -660,6 +705,14 @@
     btnAddTracked: $('#btn-add-tracked'),
     btnResetTracked: $('#btn-reset-tracked'),
     trackedChannelList: $('#tracked-channel-list'),
+
+    newsModal: $('#news-modal'),
+    btnCloseNewsModal: $('#btn-close-news-modal'),
+    newsInput: $('#news-input'),
+    newsGroupSelect: $('#news-group-select'),
+    btnAddNews: $('#btn-add-news'),
+    btnResetNews: $('#btn-reset-news'),
+    newsChannelList: $('#news-channel-list'),
 
     tagModal: $('#tag-modal'),
     btnCloseTagModal: $('#btn-close-tag-modal'),
@@ -723,8 +776,12 @@
     const publishedAtMs = getPublishedAtMs(dateStr);
     if (!publishedAtMs) return 'Unknown';
     const diff = Date.now() - publishedAtMs;
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
     const d = Math.floor(diff / 86400000);
-    if (d < 1) return 'Today';
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
     if (d === 1) return 'Yesterday';
     if (d < 7) return `${d} days ago`;
     if (d < 30) return `${Math.floor(d / 7)} week${Math.floor(d / 7) > 1 ? 's' : ''} ago`;
@@ -1363,6 +1420,35 @@
     if (!state.continueWatching || typeof state.continueWatching !== 'object' || Array.isArray(state.continueWatching)) {
       state.continueWatching = getInitialContinueWatching();
       changed = true;
+    } else {
+      const sanitizedContinueWatching = sanitizeContinueWatchingSnapshot(state.continueWatching);
+      if (Object.keys(sanitizedContinueWatching).length !== Object.keys(state.continueWatching).length) {
+        state.continueWatching = sanitizedContinueWatching;
+        changed = true;
+      }
+    }
+
+    if (!Array.isArray(state.newsChannels)) {
+      state.newsChannels = getInitialNewsChannels();
+      changed = true;
+    } else {
+      const sanitizedNewsChannels = sanitizeNewsChannels(state.newsChannels);
+      if (sanitizedNewsChannels.length !== state.newsChannels.length) {
+        state.newsChannels = sanitizedNewsChannels;
+        changed = true;
+      }
+    }
+
+    const newsSeenDefaults = getDefaultNewsSeenAt(state.newsChannels);
+    if (!state.newsSeenAt || typeof state.newsSeenAt !== 'object' || Array.isArray(state.newsSeenAt)) {
+      state.newsSeenAt = { ...newsSeenDefaults };
+      changed = true;
+    } else {
+      const mergedNewsSeenAt = { ...newsSeenDefaults, ...state.newsSeenAt };
+      if (Object.keys(mergedNewsSeenAt).length !== Object.keys(state.newsSeenAt).length) {
+        state.newsSeenAt = mergedNewsSeenAt;
+        changed = true;
+      }
     }
 
     if (changed) {
@@ -1571,7 +1657,7 @@
   }
 
   function recalculateNewsNewCounts(videos, baseline = state.newsSeenAt) {
-    const counts = getDefaultNewsSeenAt();
+    const counts = getDefaultNewsSeenAt(state.newsChannels);
 
     videos.forEach((video) => {
       const publishedAt = getPublishedAtMs(video.addedAt);
@@ -1584,6 +1670,7 @@
       }
 
       const region = video.newsRegion || 'World News';
+      if (!(region in counts)) counts[region] = 0;
       if (publishedAt > (baseline[region] || 0)) {
         counts[region] += 1;
       }
@@ -1593,7 +1680,7 @@
       }
     });
 
-    getTrendingNewsVideos(videos, '24h').forEach((video) => {
+    getTrendingNewsVideos(videos, 'today').forEach((video) => {
       const publishedAt = getPublishedAtMs(video.addedAt);
       if (publishedAt > (baseline.Trending || 0)) {
         counts.Trending += 1;
@@ -1655,7 +1742,7 @@
   function normalizeChannelReference(input) {
     const trimmed = input.trim();
     if (!trimmed) {
-      throw new Error('Enter a channel handle, URL, or channel ID.');
+      throw new Error('Enter a channel name, @handle, URL, or channel ID.');
     }
 
     if (/^UC[\w-]{20,}$/.test(trimmed)) {
@@ -1677,7 +1764,7 @@
       }
     }
 
-    throw new Error('Use a channel @handle, channel URL, or channel ID.');
+    return { kind: 'search', value: trimmed };
   }
 
   function renderTrackedChannelsList() {
@@ -1744,22 +1831,129 @@
     fetchTrackedFeed({ background: state.activePlaylistId !== 'TRACKED_FEED' });
   }
 
-  async function lookupTrackedChannel(reference) {
-    const url = reference.kind === 'id'
-      ? `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${encodeURIComponent(reference.value)}`
-      : `https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=${encodeURIComponent(reference.value.replace(/^@/, ''))}`;
+  function renderNewsChannelsList() {
+    dom.newsChannelList.innerHTML = '';
 
-    const data = await apiFetch(url);
-    const channel = data.items?.[0];
-    if (!channel) {
-      throw new Error('Channel not found. Try a different handle or URL.');
+    if (state.newsChannels.length === 0) {
+      dom.newsChannelList.innerHTML = '<p style="color:var(--text-muted);font-size:0.9rem;">No news channels yet.</p>';
+      return;
     }
 
-    const handle = channel.snippet.customUrl
+    [...state.newsChannels]
+      .sort((a, b) => `${a.group}-${a.title}`.localeCompare(`${b.group}-${b.title}`))
+      .forEach((channel) => {
+        const row = document.createElement('div');
+        row.className = 'tracked-channel-item';
+        row.innerHTML = `
+          <span class="tracked-channel-badge">${escHtml(channel.group || 'World News')}</span>
+          <div class="tracked-channel-meta">
+            <div class="tracked-channel-title">${escHtml(channel.title)}</div>
+            <div class="tracked-channel-handle">${escHtml(channel.handle || channel.id)}</div>
+          </div>
+          <button class="tracked-channel-remove" type="button">Remove</button>
+        `;
+
+        row.querySelector('.tracked-channel-remove').addEventListener('click', () => {
+          removeNewsChannel(channel.id || channel.handle || channel.title);
+        });
+
+        dom.newsChannelList.appendChild(row);
+      });
+  }
+
+  function openNewsModal() {
+    renderNewsChannelsList();
+    dom.newsInput.value = '';
+    dom.newsGroupSelect.value = 'US News';
+    show(dom.newsModal);
+    setTimeout(() => dom.newsInput.focus(), 100);
+  }
+
+  function closeNewsModal() {
+    hide(dom.newsModal);
+  }
+
+  function removeNewsChannel(channelKey) {
+    state.newsChannels = state.newsChannels.filter((channel) => {
+      const key = channel.id || channel.handle || channel.title;
+      return key !== channelKey;
+    });
+
+    if (!getNewsGroups().includes(state.activeNewsGroup)) {
+      state.activeNewsGroup = 'All';
+    }
+
+    state.newsSeenAt = { ...getDefaultNewsSeenAt(state.newsChannels), ...state.newsSeenAt };
+    persistNewsChannels();
+    persistNewsSeenAt();
+    recalculateNewsNewCounts(state.newsFeedVideos, state.newsSeenAt);
+    renderNewsChannelsList();
+    renderPlaylists();
+
+    fetchNewsFeed({ background: state.activePlaylistId !== 'NEWS_FEED', force: true });
+  }
+
+  function resetNewsChannels() {
+    state.newsChannels = DEFAULT_NEWS_CHANNELS.map((channel) => ({ ...channel }));
+    state.activeNewsGroup = 'All';
+    state.activeNewsTrendWindow = 'today';
+    state.newsSeenAt = { ...getDefaultNewsSeenAt(state.newsChannels), ...state.newsSeenAt };
+    persistNewsChannels();
+    persistNewsSeenAt();
+    recalculateNewsNewCounts(state.newsFeedVideos, state.newsSeenAt);
+    renderNewsChannelsList();
+    renderPlaylists();
+    showToast('News channels reset to defaults.');
+
+    fetchNewsFeed({ background: state.activePlaylistId !== 'NEWS_FEED', force: true });
+  }
+
+  async function fetchChannelSnippetById(channelId) {
+    const data = await apiFetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${encodeURIComponent(channelId)}`);
+    return data.items?.[0] || null;
+  }
+
+  async function lookupChannelSnippet(reference) {
+    let channel = null;
+
+    if (reference.kind === 'id') {
+      channel = await fetchChannelSnippetById(reference.value);
+    } else if (reference.kind === 'handle') {
+      const data = await apiFetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=${encodeURIComponent(reference.value.replace(/^@/, ''))}`);
+      channel = data.items?.[0] || null;
+    } else {
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=6&q=${encodeURIComponent(reference.value)}`;
+      const searchData = await apiFetch(searchUrl);
+      const normalizedQuery = normalizeLooseText(reference.value);
+      const bestMatch = (searchData.items || []).find((item) => {
+        const candidate = normalizeLooseText(item.snippet?.channelTitle || item.snippet?.title || '');
+        return candidate === normalizedQuery || candidate.includes(normalizedQuery) || normalizedQuery.includes(candidate);
+      }) || searchData.items?.[0];
+
+      if (bestMatch?.id?.channelId) {
+        channel = await fetchChannelSnippetById(bestMatch.id.channelId);
+      }
+    }
+
+    if (!channel) {
+      throw new Error('Channel not found. Try a different handle, URL, or name.');
+    }
+
+    const handle = channel.snippet?.customUrl
       ? `@${channel.snippet.customUrl.replace(/^@/, '')}`
       : (reference.kind === 'handle' ? reference.value : channel.id);
 
-    const title = channel.snippet.title || handle || channel.id;
+    return {
+      id: channel.id,
+      title: channel.snippet?.title || handle || channel.id,
+      handle,
+    };
+  }
+
+  async function lookupTrackedChannel(reference) {
+    const channel = await lookupChannelSnippet(reference);
+    const handle = channel.handle;
+    const title = channel.title;
     const lower = `${title} ${handle}`.toLowerCase();
     const group = lower.includes('hasan') ? 'Hasan' : lower.includes('destiny') || lower.includes('dgg') ? 'Destiny' : 'Custom';
 
@@ -1768,6 +1962,16 @@
       title,
       handle,
       group,
+    };
+  }
+
+  async function lookupNewsChannel(reference, preferredGroup) {
+    const channel = await lookupChannelSnippet(reference);
+    return {
+      id: channel.id,
+      title: channel.title,
+      handle: channel.handle,
+      group: preferredGroup || 'World News',
     };
   }
 
@@ -1801,6 +2005,43 @@
     } finally {
       dom.btnAddTracked.disabled = false;
       dom.btnAddTracked.textContent = originalLabel;
+    }
+  }
+
+  async function addNewsChannel() {
+    const raw = dom.newsInput.value.trim();
+    if (!raw) return;
+
+    const originalLabel = dom.btnAddNews.textContent;
+    dom.btnAddNews.disabled = true;
+    dom.btnAddNews.textContent = 'Adding...';
+
+    try {
+      const reference = normalizeChannelReference(raw);
+      const group = dom.newsGroupSelect.value || 'World News';
+      const channel = await lookupNewsChannel(reference, group);
+      if (state.newsChannels.some((entry) => entry.id === channel.id)) {
+        showToast('This channel is already in the news feed.', 'error');
+        return;
+      }
+
+      state.newsChannels.push(channel);
+      state.newsSeenAt = { ...getDefaultNewsSeenAt(state.newsChannels), ...state.newsSeenAt };
+      persistNewsChannels();
+      persistNewsSeenAt();
+      recalculateNewsNewCounts(state.newsFeedVideos, state.newsSeenAt);
+      renderNewsChannelsList();
+      renderPlaylists();
+      dom.newsInput.value = '';
+      showToast(`Added ${channel.title} to the news feed.`);
+
+      fetchNewsFeed({ background: state.activePlaylistId !== 'NEWS_FEED', force: true });
+    } catch (error) {
+      console.error('Add news channel failed:', error);
+      showToast(error.message || 'Failed to add news channel.', 'error');
+    } finally {
+      dom.btnAddNews.disabled = false;
+      dom.btnAddNews.textContent = originalLabel;
     }
   }
 
@@ -2600,17 +2841,18 @@
         try {
           const detailData = await apiFetch(detailUrl);
           (detailData.items || []).forEach((video) => {
-            detailMap[video.id] = {
-              duration: parseDuration(video.contentDetails.duration),
-              description: video.snippet.description || '',
-              tags: video.snippet.tags || [],
-              channel: video.snippet.channelTitle || '',
-              categoryId: video.snippet.categoryId || '',
-              viewCount: Number(video.statistics?.viewCount || 0),
-            };
-          });
-        } catch (error) {
-          console.warn('News detail fetch failed for chunk, continuing.', error);
+          detailMap[video.id] = {
+            duration: parseDuration(video.contentDetails.duration),
+            description: video.snippet.description || '',
+            tags: video.snippet.tags || [],
+            channel: video.snippet.channelTitle || '',
+            categoryId: video.snippet.categoryId || '',
+            viewCount: Number(video.statistics?.viewCount || 0),
+            commentCount: Number(video.statistics?.commentCount || 0),
+          };
+        });
+      } catch (error) {
+        console.warn('News detail fetch failed for chunk, continuing.', error);
         }
       }
 
@@ -2634,6 +2876,7 @@
             tags: detail?.tags || [],
             newsProgram,
             viewCount: detail?.viewCount || 0,
+            commentCount: detail?.commentCount || 0,
           };
         })
         .sort((a, b) => getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt));
@@ -3159,7 +3402,7 @@
     }
 
     const featuredVideo = sourceVideos[0];
-    const railVideos = sourceVideos.slice(1, 6);
+    const railVideos = sourceVideos.slice(1, isNewsFeed ? 9 : 6);
     const mainTitle = isNewsFeed
       ? (state.activeNewsGroup === 'Today'
         ? 'Noticias de Hoje'
@@ -3174,7 +3417,7 @@
       : `${state.trackedChannels.length} channels tracked for your daily catch-up`;
     const kicker = isNewsFeed
       ? (state.activeNewsGroup === 'Trending'
-        ? `Top momentum in ${getTrendingWindowConfig().label.toLowerCase()}`
+        ? `Most watched and discussed in ${getTrendingWindowConfig().label.toLowerCase()}`
         : state.activeNewsGroup === 'Today'
           ? 'Fresh uploads from today'
           : 'Live desk')
@@ -3216,7 +3459,7 @@
         <div class="feed-rail-copy">
           <span class="feed-rail-rank">${isNewsFeed && state.activeNewsGroup === 'Trending' ? `#${index + 2}` : timeAgo(video.addedAt)}</span>
           <span class="feed-rail-title">${escHtml(video.title)}</span>
-          <span class="feed-rail-meta">${escHtml(video.channel)} • ${timeAgo(video.addedAt)}${video.viewCount ? ` • ${formatCompactNumber(video.viewCount)} views` : ''}</span>
+          <span class="feed-rail-meta">${escHtml(video.channel)} • ${timeAgo(video.addedAt)}${video.viewCount ? ` • ${formatCompactNumber(video.viewCount)} views` : ''}${video.commentCount ? ` • ${formatCompactNumber(video.commentCount)} comments` : ''}</span>
         </div>
       </button>
     `).join('');
@@ -3234,7 +3477,7 @@
           <div class="feed-featured-media">
             <img class="feed-featured-thumb" src="${featuredVideo.thumbnail}" alt="${escHtml(featuredVideo.title)}" loading="lazy" />
             <span class="feed-featured-duration">${escHtml(featuredVideo.durationFormatted)}</span>
-            ${featuredVideo.viewCount ? `<span class="feed-featured-views">${formatCompactNumber(featuredVideo.viewCount)} views</span>` : ''}
+            ${featuredVideo.viewCount ? `<span class="feed-featured-views">${formatCompactNumber(featuredVideo.viewCount)} views${featuredVideo.commentCount ? ` • ${formatCompactNumber(featuredVideo.commentCount)} comments` : ''}</span>` : ''}
           </div>
           <div class="feed-featured-copy">
             <div class="feed-featured-channel">${escHtml(featuredVideo.channel)}</div>
@@ -3243,7 +3486,7 @@
           </div>
         </button>
       </section>
-      ${railVideos.length > 0 ? `<section class="feed-rail">${railMarkup}</section>` : ''}
+      ${railVideos.length > 0 ? `<section class="feed-rail ${isNewsFeed ? 'is-news' : ''}">${railMarkup}</section>` : ''}
     `;
 
     const featuredMetaEl = dom.feedShell.querySelector('.feed-featured-meta');
@@ -3257,7 +3500,7 @@
       const video = railVideos[index];
       if (!video) return;
       const railPublishedAt = formatPublishedAt(video.addedAt);
-      metaEl.textContent = `${video.channel} • ${railPublishedAt}${video.viewCount ? ` • ${formatCompactNumber(video.viewCount)} views` : ''}`;
+      metaEl.textContent = `${video.channel} • ${railPublishedAt}${video.viewCount ? ` • ${formatCompactNumber(video.viewCount)} views` : ''}${video.commentCount ? ` • ${formatCompactNumber(video.commentCount)} comments` : ''}`;
       metaEl.title = `Published ${railPublishedAt}`;
     });
 
@@ -3951,6 +4194,9 @@
         : v.viewCount
         ? `<span>${formatCompactNumber(v.viewCount)} views</span>`
         : '';
+      const commentCountHtml = !v.isLive && v.commentCount
+        ? `<span>${formatCompactNumber(v.commentCount)} comments</span>`
+        : '';
       
       const tagsHtml = hasTags 
         ? `<div class="video-tags-container">
@@ -4007,6 +4253,7 @@
                 <span>${timeAgo(v.addedAt)}</span>
                 <span title="Published ${escHtml(publishedAtLabel)}">${publishedAtLabel}</span>
                 ${viewCountHtml}
+                ${commentCountHtml}
                 <span class="video-category-badge">${escHtml(v.category)}</span>
                 ${relayBadgeHtml}
                 ${v.isPodcast ? '<span class="video-category-badge" style="background:rgba(168,85,247,0.12);color:var(--purple);">Podcast</span>' : ''}
@@ -4420,6 +4667,10 @@
     dom.btnManageTracked.addEventListener('click', () => {
       openTrackedModal();
     });
+
+    dom.btnManageNews.addEventListener('click', () => {
+      openNewsModal();
+    });
     
     dom.btnCloseFollowModal.addEventListener('click', () => {
       hide(dom.followModal);
@@ -4443,6 +4694,16 @@
       if (e.key === 'Enter') addTrackedChannel();
     });
     dom.btnResetTracked.addEventListener('click', resetTrackedChannels);
+
+    dom.btnCloseNewsModal.addEventListener('click', closeNewsModal);
+    dom.newsModal.addEventListener('click', (e) => {
+      if (e.target === dom.newsModal) closeNewsModal();
+    });
+    dom.btnAddNews.addEventListener('click', addNewsChannel);
+    dom.newsInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') addNewsChannel();
+    });
+    dom.btnResetNews.addEventListener('click', resetNewsChannels);
 
     window.addEventListener('pageshow', () => {
       refreshPlaybackStateFromStorage();

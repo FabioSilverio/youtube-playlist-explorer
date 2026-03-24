@@ -681,6 +681,10 @@ body {
   padding: 4px 8px;
   font-size: 0.74rem;
   font-weight: 700;
+  max-width: calc(100% - 20px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .feed-featured-duration { right: 10px; }
@@ -708,6 +712,10 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
+}
+
+.feed-rail.is-news {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
 .feed-rail-card {
@@ -1264,6 +1272,7 @@ body {
   margin-bottom: 12px;
 }
 .tracked-input-row .search-input { flex: 1; }
+.tracked-input-row .sort-select { min-width: 148px; width: 148px; }
 .tracked-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1413,6 +1422,7 @@ body {
   .player-stage { min-height: 220px; }
   .player-details { padding: 16px; }
   .tracked-input-row { flex-direction: column; align-items: stretch; }
+  .tracked-input-row .sort-select { width: 100%; min-width: 0; }
   .feed-hero { padding: 18px; border-radius: 18px; }
   .feed-title { font-size: 1.55rem; }
   .feed-rail { grid-template-columns: 1fr; }
