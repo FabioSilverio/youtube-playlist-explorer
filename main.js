@@ -660,7 +660,9 @@
     loginOverlay: $('#login-overlay'),
     btnLogin: $('#btn-login'),
     app: $('#app'),
+    mainContent: $('#main-content'),
     btnRefreshView: $('#btn-refresh-view'),
+    btnFeedRefreshInline: $('#btn-feed-refresh-inline'),
     btnLogout: $('#btn-logout'),
     userAvatar: $('#user-avatar'),
     userName: $('#user-name'),
@@ -759,6 +761,7 @@
   let silentRenewPromise = null;
   let centralCacheSyncTimer = null;
   let centralCacheSyncPromise = null;
+  let feedTransitionTimer = null;
 
   // ---- YouTube Category mapping (most common) ----
   const YT_CATEGORIES = {
@@ -1213,28 +1216,36 @@
   }
 
   function updateRefreshButton() {
-    if (!dom.btnRefreshView) return;
+    const needsButton = Boolean(state.activePlaylistId);
 
-    const needsButton = ['TRACKED_FEED', 'NEWS_FEED', 'NEWS_LIVE', 'DISCOVER'].includes(state.activePlaylistId)
-      || Boolean(state.activePlaylistId && !['CONTINUE_WATCHING'].includes(state.activePlaylistId));
-    dom.btnRefreshView.classList.toggle('hidden', !needsButton);
-
+    let label = 'Refresh';
+    let title = 'Refresh current playlist';
     if (state.activePlaylistId === 'TRACKED_FEED') {
-      dom.btnRefreshView.textContent = 'Refresh feed';
-      dom.btnRefreshView.title = 'Refresh tracked feed now';
+      label = 'Refresh feed';
+      title = 'Refresh tracked feed now';
     } else if (state.activePlaylistId === 'NEWS_FEED') {
-      dom.btnRefreshView.textContent = 'Refresh news';
-      dom.btnRefreshView.title = 'Refresh news feed now';
+      label = 'Refresh news';
+      title = 'Refresh news feed now';
     } else if (state.activePlaylistId === 'NEWS_LIVE') {
-      dom.btnRefreshView.textContent = 'Refresh live';
-      dom.btnRefreshView.title = 'Refresh live news now';
+      label = 'Refresh live';
+      title = 'Refresh live news now';
     } else if (state.activePlaylistId === 'DISCOVER') {
-      dom.btnRefreshView.textContent = 'Search again';
-      dom.btnRefreshView.title = 'Run the current discover search again';
-    } else {
-      dom.btnRefreshView.textContent = 'Refresh';
-      dom.btnRefreshView.title = 'Refresh current playlist';
+      label = 'Search again';
+      title = 'Run the current discover search again';
+    } else if (state.activePlaylistId === 'CONTINUE_WATCHING') {
+      label = 'Refresh list';
+      title = 'Refresh your continue watching list';
     }
+
+    [dom.btnRefreshView, dom.btnFeedRefreshInline].forEach((button) => {
+      if (!button) return;
+      button.classList.toggle('hidden', !needsButton);
+      if (!needsButton) return;
+      button.textContent = label;
+      button.title = title;
+      button.disabled = state.isLoading;
+      button.classList.toggle('is-busy', state.isLoading);
+    });
   }
 
   function buildCentralCacheSnapshot() {
@@ -3612,74 +3623,101 @@
     }
   }
 
+  function beginFeedTransition() {
+    if (!dom.mainContent) return;
+    clearTimeout(feedTransitionTimer);
+    dom.mainContent.classList.add('is-view-switching');
+  }
+
+  function endFeedTransition() {
+    if (!dom.mainContent) return;
+    clearTimeout(feedTransitionTimer);
+    feedTransitionTimer = setTimeout(() => {
+      dom.mainContent.classList.remove('is-view-switching');
+      updateRefreshButton();
+    }, 30);
+  }
+
+  function handleRefreshClick() {
+    refreshCurrentView().catch((error) => {
+      console.error('Refresh current view failed:', error);
+      showToast('Failed to refresh this view.', 'error');
+    });
+  }
+
   async function selectPlaylist(playlistId, el) {
     if (state.isLoading) return;
+    beginFeedTransition();
 
-    // Update active state
-    $$('.playlist-item').forEach((item) => item.classList.remove('active'));
-    el.classList.add('active');
+    try {
+      // Update active state
+      $$('.playlist-item').forEach((item) => item.classList.remove('active'));
+      el.classList.add('active');
 
-    state.activePlaylistId = playlistId;
-    state.allVideos = [];
-    state.nextPageToken = null;
-    state.detectedCategories = new Set();
-    updateRefreshButton();
+      state.activePlaylistId = playlistId;
+      state.allVideos = [];
+      state.nextPageToken = null;
+      state.detectedCategories = new Set();
+      updateRefreshButton();
 
-    // Reset filters
-    resetFilters();
+      // Reset filters
+      resetFilters();
 
-    // Collapse sidebar on mobile
-    if (window.innerWidth <= 1024) {
-      dom.sidebar.classList.remove('open');
-    }
-
-    hide(dom.welcomeState);
-    
-    if (playlistId === 'DISCOVER') {
-      state.searchMode = 'youtube';
-      show(dom.discoverBar);
-      hide(dom.filterBar);
-      dom.videoGrid.innerHTML = '';
-      hide(dom.emptyState);
-      hide(dom.loadMoreWrapper);
-      
-      // If we already have a discover search, show it. Otherwise wait for user search.
-      if (dom.discoverInput.value.trim()) {
-        performYoutubeSearch();
+      // Collapse sidebar on mobile
+      if (window.innerWidth <= 1024) {
+        dom.sidebar.classList.remove('open');
       }
-    } else if (playlistId === 'TRACKED_FEED') {
-      state.searchMode = 'tracked';
-      hide(dom.discoverBar);
-      show(dom.filterBar);
-      dom.filterBar.classList.remove('mobile-open');
-      await fetchTrackedFeed();
-    } else if (playlistId === 'NEWS_FEED') {
-      state.searchMode = 'news';
-      hide(dom.discoverBar);
-      show(dom.filterBar);
-      dom.filterBar.classList.remove('mobile-open');
-      await fetchNewsFeed();
-    } else if (playlistId === 'NEWS_LIVE') {
-      state.searchMode = 'newslive';
-      hide(dom.discoverBar);
-      show(dom.filterBar);
-      dom.filterBar.classList.remove('mobile-open');
-      await fetchNewsLiveFeed();
-    } else if (playlistId === 'CONTINUE_WATCHING') {
-      state.searchMode = 'continue';
-      hide(dom.discoverBar);
-      show(dom.filterBar);
-      dom.filterBar.classList.remove('mobile-open');
-      state.allVideos = getContinueWatchingVideos();
-      state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
-      renderCategoryChips();
-      applyFilters();
-    } else {
-      state.searchMode = 'filter';
-      hide(dom.discoverBar);
-      show(dom.filterBar);
-      dom.filterBar.classList.remove('mobile-open'); // Close filters on mobile when switching playlists
-      await loadPlaylistVideos();
+
+      hide(dom.welcomeState);
+
+      if (playlistId === 'DISCOVER') {
+        state.searchMode = 'youtube';
+        show(dom.discoverBar);
+        hide(dom.filterBar);
+        dom.videoGrid.innerHTML = '';
+        hide(dom.emptyState);
+        hide(dom.loadMoreWrapper);
+
+        // If we already have a discover search, show it. Otherwise wait for user search.
+        if (dom.discoverInput.value.trim()) {
+          await performYoutubeSearch();
+        }
+      } else if (playlistId === 'TRACKED_FEED') {
+        state.searchMode = 'tracked';
+        hide(dom.discoverBar);
+        show(dom.filterBar);
+        dom.filterBar.classList.remove('mobile-open');
+        await fetchTrackedFeed();
+      } else if (playlistId === 'NEWS_FEED') {
+        state.searchMode = 'news';
+        hide(dom.discoverBar);
+        show(dom.filterBar);
+        dom.filterBar.classList.remove('mobile-open');
+        await fetchNewsFeed();
+      } else if (playlistId === 'NEWS_LIVE') {
+        state.searchMode = 'newslive';
+        hide(dom.discoverBar);
+        show(dom.filterBar);
+        dom.filterBar.classList.remove('mobile-open');
+        await fetchNewsLiveFeed();
+      } else if (playlistId === 'CONTINUE_WATCHING') {
+        state.searchMode = 'continue';
+        hide(dom.discoverBar);
+        show(dom.filterBar);
+        dom.filterBar.classList.remove('mobile-open');
+        state.allVideos = getContinueWatchingVideos();
+        state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+        renderCategoryChips();
+        applyFilters();
+      } else {
+        state.searchMode = 'filter';
+        hide(dom.discoverBar);
+        show(dom.filterBar);
+        dom.filterBar.classList.remove('mobile-open'); // Close filters on mobile when switching playlists
+        await loadPlaylistVideos();
+      }
+    } finally {
+      endFeedTransition();
     }
   }
 
@@ -4677,12 +4715,11 @@
     });
 
     if (dom.btnRefreshView) {
-      dom.btnRefreshView.addEventListener('click', () => {
-        refreshCurrentView().catch((error) => {
-          console.error('Refresh current view failed:', error);
-          showToast('Failed to refresh this view.', 'error');
-        });
-      });
+      dom.btnRefreshView.addEventListener('click', handleRefreshClick);
+    }
+
+    if (dom.btnFeedRefreshInline) {
+      dom.btnFeedRefreshInline.addEventListener('click', handleRefreshClick);
     }
 
     dom.btnOpenYoutube.addEventListener('click', () => {
