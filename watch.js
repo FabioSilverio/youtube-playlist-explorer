@@ -307,7 +307,7 @@
       return;
     }
 
-    if (seconds < 5 && !existing) return;
+    if (seconds < 1 && !existing) return;
 
     const updatedVideo = {
       ...existing,
@@ -361,6 +361,8 @@
     if (!playerState) return;
 
     if (event.data === playerState.PLAYING) {
+      const seedTime = Math.max(1, Math.floor(event.target?.getCurrentTime ? event.target.getCurrentTime() : 0));
+      saveContinueProgress(seedTime);
       startProgressTracking();
     } else if (event.data === playerState.PAUSED || event.data === playerState.BUFFERING) {
       syncPlayerProgress();

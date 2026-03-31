@@ -881,6 +881,143 @@
       : '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg> Watch later';
   }
 
+  function getWatchLaterCacheEntry() {
+    const existing = state.playlistVideoCache?.WL;
+    if (existing && Array.isArray(existing.videos)) {
+      return {
+        updatedAt: existing.updatedAt || '',
+        nextPageToken: null,
+        videos: existing.videos.filter((video) => video && typeof video.id === 'string' && video.id.trim()),
+      };
+    }
+
+    return {
+      updatedAt: '',
+      nextPageToken: null,
+      videos: [],
+    };
+  }
+
+  function normalizeVideoForMirror(video, fallbackId = '') {
+    const id = typeof video?.id === 'string' && video.id.trim() ? video.id.trim() : fallbackId;
+    if (!id) return null;
+
+    return {
+      id,
+      title: typeof video?.title === 'string' ? video.title : 'Saved video',
+      channel: typeof video?.channel === 'string' ? video.channel : '',
+      thumbnail: typeof video?.thumbnail === 'string' ? video.thumbnail : '',
+      addedAt: typeof video?.addedAt === 'string' ? video.addedAt : '',
+      duration: Number(video?.duration || 0),
+      durationFormatted: typeof video?.durationFormatted === 'string'
+        ? video.durationFormatted
+        : formatDuration(Number(video?.duration || 0)),
+      category: typeof video?.category === 'string' ? video.category : 'Other',
+      isPodcast: Boolean(video?.isPodcast),
+      description: typeof video?.description === 'string' ? video.description : '',
+      tags: Array.isArray(video?.tags) ? video.tags.filter((tag) => typeof tag === 'string').slice(0, 30) : [],
+      savedAt: Number(video?.savedAt || Date.now()),
+    };
+  }
+
+  function getKnownVideoCollections() {
+    return [
+      state.allVideos,
+      state.filteredVideos,
+      state.ytSearchResults,
+      state.trackedFeedVideos,
+      state.newsFeedVideos,
+      state.newsLiveVideos,
+      Object.values(state.continueWatching || {}),
+      Object.values(state.playlistVideoCache || {}).flatMap((entry) => Array.isArray(entry?.videos) ? entry.videos : []),
+    ];
+  }
+
+  function findKnownVideoById(videoId) {
+    if (!videoId) return null;
+
+    for (const collection of getKnownVideoCollections()) {
+      const match = Array.isArray(collection) ? collection.find((video) => video?.id === videoId) : null;
+      if (match) return match;
+    }
+
+    try {
+      const selected = JSON.parse(localStorage.getItem('yt_explorer_selected_video') || 'null');
+      if (selected?.id === videoId) {
+        return selected;
+      }
+    } catch (error) {
+      console.warn('Unable to read selected video while hydrating Watch Later mirror.', error);
+    }
+
+    return null;
+  }
+
+  function persistWatchLaterMirror(videos) {
+    state.playlistVideoCache.WL = {
+      updatedAt: new Date().toISOString(),
+      nextPageToken: null,
+      videos,
+    };
+    persistPlaylistVideoCache();
+  }
+
+  function rebuildWatchLaterMirror() {
+    const entry = getWatchLaterCacheEntry();
+    if (!(state.watchLaterVideoIds instanceof Set) || state.watchLaterVideoIds.size === 0) {
+      if (entry.videos.length > 0) {
+        persistWatchLaterMirror([]);
+      }
+      return [];
+    }
+
+    const byId = new Map();
+
+    entry.videos.forEach((video) => {
+      if (!video?.id || !state.watchLaterVideoIds.has(video.id)) return;
+      const normalized = normalizeVideoForMirror(video, video.id);
+      if (normalized) {
+        byId.set(normalized.id, { ...normalized, savedAt: Number(video.savedAt || normalized.savedAt || Date.now()) });
+      }
+    });
+
+    state.watchLaterVideoIds.forEach((videoId) => {
+      if (byId.has(videoId)) return;
+      const normalized = normalizeVideoForMirror(findKnownVideoById(videoId), videoId);
+      if (normalized) {
+        byId.set(videoId, normalized);
+      }
+    });
+
+    const videos = [...byId.values()]
+      .sort((a, b) => (Number(b.savedAt || 0) - Number(a.savedAt || 0)) || (getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt)));
+
+    persistWatchLaterMirror(videos);
+    return videos;
+  }
+
+  function addVideoToWatchLaterMirror(videoId) {
+    state.watchLaterVideoIds.add(videoId);
+    persistWatchLaterVideoIds();
+    const normalized = normalizeVideoForMirror(findKnownVideoById(videoId), videoId);
+    if (normalized) {
+      const entry = getWatchLaterCacheEntry();
+      const byId = new Map(entry.videos.map((video) => [video.id, video]));
+      const existing = byId.get(normalized.id) || {};
+      byId.set(normalized.id, {
+        ...existing,
+        ...normalized,
+        savedAt: Number(existing.savedAt || Date.now()),
+      });
+      persistWatchLaterMirror(
+        [...byId.values()].sort((a, b) => (Number(b.savedAt || 0) - Number(a.savedAt || 0)) || (getPublishedAtMs(b.addedAt) - getPublishedAtMs(a.addedAt)))
+      );
+      return;
+    }
+
+    rebuildWatchLaterMirror();
+  }
+
   function isPodcast(title, channel, duration) {
     // Basic heuristic: duration > 30m and specific words
     const t = (title + ' ' + channel).toLowerCase();
@@ -966,7 +1103,7 @@
       return;
     }
 
-    if (seconds < 5 && !existing) return;
+    if (seconds < 1 && !existing) return;
 
     state.continueWatching[video.id] = {
       ...existing,
@@ -1032,6 +1169,8 @@
     if (!playerState) return;
 
     if (event.data === playerState.PLAYING) {
+      const seedTime = Math.max(1, Math.floor(event.target?.getCurrentTime ? event.target.getCurrentTime() : 0));
+      saveContinueProgress(state.activeVideo, seedTime);
       startPlayerProgressTracking();
     } else if (event.data === playerState.PAUSED || event.data === playerState.BUFFERING) {
       syncPlayerProgress();
@@ -1271,6 +1410,7 @@
     show(dom.app);
     updateAuthUi();
     renderPlaylists();
+    openDefaultHome().catch(() => {});
     if (message) {
       showToast(message);
     }
@@ -1569,7 +1709,9 @@
   function refreshPlaybackStateFromStorage() {
     state.continueWatching = getInitialContinueWatching();
     state.watchedVideos = new Set(getInitialWatchedVideos());
+    state.watchLaterVideoIds = new Set(getInitialWatchLaterVideoIds());
     ensureStateCollectionsHealthy();
+    rebuildWatchLaterMirror();
 
     renderPlaylists();
 
@@ -2730,7 +2872,14 @@
     try {
       const data = await apiFetch('https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true');
       const relatedPlaylists = data.items?.[0]?.contentDetails?.relatedPlaylists || {};
-      state.watchLaterPlaylistId = relatedPlaylists.watchLater || state.watchLaterPlaylistId || '';
+      const resolvedWatchLaterId = typeof relatedPlaylists.watchLater === 'string'
+        ? relatedPlaylists.watchLater.trim()
+        : '';
+      if (resolvedWatchLaterId && resolvedWatchLaterId !== 'WL') {
+        state.watchLaterPlaylistId = resolvedWatchLaterId;
+      } else if (!state.watchLaterPlaylistId || state.watchLaterPlaylistId === 'WL') {
+        state.watchLaterPlaylistId = '';
+      }
       persistWatchLaterPlaylistId();
       return relatedPlaylists;
     } catch (error) {
@@ -3424,7 +3573,8 @@
     dom.playlistCount.textContent = String(state.playlists.length);
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
-    const watchLaterCount = state.playlistVideoCache.WL?.videos?.length || 0;
+    const watchLaterVideos = rebuildWatchLaterMirror();
+    const watchLaterCount = watchLaterVideos.length;
     const trackedGroups = getTrackedGroups();
     const newsGroups = getNewsGroups();
     const totalTrackedNew = state.trackedNewCounts.All || 0;
@@ -3600,7 +3750,21 @@
         dom.sidebarList.appendChild(groupItem);
       });
 
-    if (state.watchLaterPlaylistId || state.accessToken) {
+    const continueItem = document.createElement('div');
+    continueItem.className = 'playlist-item' + (state.activePlaylistId === 'CONTINUE_WATCHING' ? ' active' : '');
+    continueItem.innerHTML = `
+      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+        <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+      </div>
+      <div class="playlist-meta">
+        <div class="playlist-title">Continue Watching</div>
+        <div class="playlist-video-count">${continueWatchingVideos.length > 0 ? `${continueWatchingVideos.length} in progress` : 'Resume where you left off'}</div>
+      </div>
+    `;
+    continueItem.addEventListener('click', () => selectPlaylist('CONTINUE_WATCHING', continueItem));
+    dom.sidebarList.appendChild(continueItem);
+
+    if (watchLaterCount > 0 || state.watchLaterPlaylistId || state.accessToken) {
       const watchLaterItem = document.createElement('div');
       watchLaterItem.className = 'playlist-item' + (state.activePlaylistId === 'WL' ? ' active' : '');
       watchLaterItem.innerHTML = `
@@ -3615,20 +3779,6 @@
       watchLaterItem.addEventListener('click', () => selectPlaylist('WL', watchLaterItem));
       dom.sidebarList.appendChild(watchLaterItem);
     }
-
-    const continueItem = document.createElement('div');
-    continueItem.className = 'playlist-item' + (state.activePlaylistId === 'CONTINUE_WATCHING' ? ' active' : '');
-    continueItem.innerHTML = `
-      <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
-        <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
-      </div>
-      <div class="playlist-meta">
-        <div class="playlist-title">Continue Watching</div>
-        <div class="playlist-video-count">${continueWatchingVideos.length > 0 ? `${continueWatchingVideos.length} in progress` : 'Resume where you left off'}</div>
-      </div>
-    `;
-    continueItem.addEventListener('click', () => selectPlaylist('CONTINUE_WATCHING', continueItem));
-    dom.sidebarList.appendChild(continueItem);
 
     // Add "Liked Videos" as a special entry
     const likedItem = document.createElement('div');
@@ -3965,6 +4115,14 @@
     await selectPlaylist('NEWS_FEED', el);
   }
 
+  async function openDefaultHome(force = false) {
+    if (!force && state.activePlaylistId) return;
+    const continueItem = [...dom.sidebarList.querySelectorAll('.playlist-item')]
+      .find((item) => item.textContent.includes('Continue Watching'));
+    if (!continueItem) return;
+    await selectPlaylist('CONTINUE_WATCHING', continueItem);
+  }
+
   async function refreshCurrentView() {
     if (!state.activePlaylistId || state.isLoading) return;
 
@@ -4015,13 +4173,12 @@
     try {
       let playlistLookupId = state.activePlaylistId;
       if (playlistLookupId === 'WL') {
-        if (!state.watchLaterPlaylistId) {
-          await fetchSpecialPlaylists();
-        }
-        playlistLookupId = state.watchLaterPlaylistId || '';
-        if (!playlistLookupId) {
-          throw new Error('Watch Later playlist is not available in this session yet.');
-        }
+        state.allVideos = rebuildWatchLaterMirror();
+        state.nextPageToken = null;
+        state.detectedCategories = new Set(state.allVideos.map((video) => video.category).filter(Boolean));
+        renderCategoryChips();
+        applyFilters();
+        return;
       }
 
       let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${playlistLookupId}&maxResults=${CONFIG.MAX_RESULTS}`;
@@ -4304,8 +4461,7 @@
       });
       
       if (playlistId === 'WL') {
-        state.watchLaterVideoIds.add(videoId);
-        persistWatchLaterVideoIds();
+        addVideoToWatchLaterMirror(videoId);
       }
 
       showToast(playlistId === 'WL' ? 'Saved to Watch Later!' : 'Added to playlist successfully!');
@@ -5247,6 +5403,7 @@
     ensureStateCollectionsHealthy();
     bindEvents();
     renderPlaylists();
+    await openDefaultHome(true);
     updateAuthUi();
     startAuthBootstrap();
 
@@ -5267,6 +5424,7 @@
           await authReadyPromise;
           await restoreCentralCacheSnapshot({ silent: true });
           await loadPrimaryLibraryData();
+          await openDefaultHome(true);
         } catch(e) {
           console.warn('Initial data load failed (likely stale token).');
         }
@@ -5289,6 +5447,7 @@
             show(dom.app);
             await restoreCentralCacheSnapshot({ silent: true });
             await loadPrimaryLibraryData();
+            await openDefaultHome(true);
           })
           .catch(() => {});
       }
