@@ -3,6 +3,7 @@
 
   const STORAGE_KEYS = {
     continueWatching: 'yt_explorer_continue',
+    continueWatchingShadow: 'yt_explorer_continue_shadow',
     watchedVideos: 'yt_explorer_watched',
     selectedVideo: 'yt_explorer_selected_video',
     session: 'yt_explorer_session',
@@ -122,7 +123,13 @@
 
   function getContinueEntry(videoId) {
     const continueWatching = readJson(STORAGE_KEYS.continueWatching, {});
-    return continueWatching[videoId] || null;
+    const shadowContinueWatching = readJson(STORAGE_KEYS.continueWatchingShadow, {});
+    return shadowContinueWatching[videoId] || continueWatching[videoId] || null;
+  }
+
+  function writeContinueWatching(continueWatching) {
+    writeJson(STORAGE_KEYS.continueWatching, continueWatching);
+    writeJson(STORAGE_KEYS.continueWatchingShadow, continueWatching);
   }
 
   async function fetchVideoMetadata(videoId) {
@@ -293,7 +300,10 @@
     if (!state.video?.id) return;
 
     const duration = state.video.duration || 0;
-    const continueWatching = readJson(STORAGE_KEYS.continueWatching, {});
+    const continueWatching = {
+      ...readJson(STORAGE_KEYS.continueWatching, {}),
+      ...readJson(STORAGE_KEYS.continueWatchingShadow, {}),
+    };
     const existing = continueWatching[state.video.id];
     const watchedVideos = getWatchedSet();
     const reportedSeconds = Math.max(0, Math.floor(progressSeconds || 0));
@@ -305,7 +315,7 @@
     if (duration && seconds >= Math.max(duration - 15, duration * 0.95)) {
       delete continueWatching[state.video.id];
       watchedVideos.add(state.video.id);
-      writeJson(STORAGE_KEYS.continueWatching, continueWatching);
+      writeContinueWatching(continueWatching);
       writeJson(STORAGE_KEYS.watchedVideos, [...watchedVideos]);
       updateProgressUi();
       return;
@@ -325,7 +335,7 @@
     continueWatching[state.video.id] = updatedVideo;
     state.video = updatedVideo;
     persistSelectedVideo(updatedVideo);
-    writeJson(STORAGE_KEYS.continueWatching, continueWatching);
+    writeContinueWatching(continueWatching);
     updateProgressUi();
   }
 
@@ -508,8 +518,12 @@
 
     schedulePlayerLayoutSync();
     persistSelectedVideo(state.video);
+    saveContinueProgress(Math.max(1, getResumeSeconds(state.video.id) || 1));
     renderVideoMeta();
-    mountPlayer();
+    mountPlayer().catch((error) => {
+      console.warn('Unable to mount watch player.', error);
+      renderVideoMeta();
+    });
   }
 
   init().catch((error) => {

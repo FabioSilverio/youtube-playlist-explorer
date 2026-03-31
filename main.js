@@ -232,9 +232,81 @@
     );
   }
 
+  const CONTINUE_WATCHING_STORAGE_KEY = 'yt_explorer_continue';
+  const CONTINUE_WATCHING_SHADOW_KEY = 'yt_explorer_continue_shadow';
+
+  function mergeContinueWatchingEntry(baseEntry, incomingEntry) {
+    if (!baseEntry) return incomingEntry;
+    if (!incomingEntry) return baseEntry;
+
+    const baseProgress = Number(baseEntry.progressSeconds || 0);
+    const incomingProgress = Number(incomingEntry.progressSeconds || 0);
+    const baseStamp = Number(baseEntry.lastPlayedAt || (baseEntry.updatedAt ? Date.parse(baseEntry.updatedAt) || 0 : 0));
+    const incomingStamp = Number(incomingEntry.lastPlayedAt || (incomingEntry.updatedAt ? Date.parse(incomingEntry.updatedAt) || 0 : 0));
+
+    const preferIncomingByTime = incomingStamp > baseStamp + 5000 && incomingProgress > 0;
+    const preferBaseByTime = baseStamp > incomingStamp + 5000 && baseProgress > 0;
+    const shouldProtectBaseProgress = incomingProgress <= 1 && baseProgress > incomingProgress;
+    const shouldProtectIncomingProgress = baseProgress <= 1 && incomingProgress > baseProgress;
+
+    const preferred = preferIncomingByTime && !shouldProtectBaseProgress
+      ? incomingEntry
+      : preferBaseByTime && !shouldProtectIncomingProgress
+        ? baseEntry
+        : incomingProgress > baseProgress
+          ? incomingEntry
+          : baseEntry;
+    const fallback = preferred === incomingEntry ? baseEntry : incomingEntry;
+
+    return {
+      ...fallback,
+      ...preferred,
+      id: preferred.id || fallback.id,
+      title: preferred.title || fallback.title,
+      channel: preferred.channel || fallback.channel,
+      thumbnail: preferred.thumbnail || fallback.thumbnail,
+      addedAt: preferred.addedAt || fallback.addedAt,
+      duration: Number(preferred.duration || fallback.duration || 0),
+      durationFormatted: preferred.durationFormatted || fallback.durationFormatted || formatDuration(Number(preferred.duration || fallback.duration || 0)),
+      category: preferred.category || fallback.category || 'Other',
+      isPodcast: Boolean(preferred.isPodcast || fallback.isPodcast),
+      description: preferred.description || fallback.description || '',
+      tags: Array.isArray(preferred.tags) && preferred.tags.length > 0 ? preferred.tags : (Array.isArray(fallback.tags) ? fallback.tags : []),
+      progressSeconds: shouldProtectBaseProgress
+        ? baseProgress
+        : shouldProtectIncomingProgress
+          ? incomingProgress
+          : preferIncomingByTime
+            ? incomingProgress
+            : preferBaseByTime
+              ? baseProgress
+              : Math.max(baseProgress, incomingProgress),
+      lastPlayedAt: Math.max(baseStamp, incomingStamp),
+      updatedAt: preferred.updatedAt || fallback.updatedAt || '',
+    };
+  }
+
+  function mergeContinueWatchingSnapshots(...snapshots) {
+    return snapshots.reduce((acc, snapshot) => {
+      const sanitized = sanitizeContinueWatchingSnapshot(snapshot);
+      Object.entries(sanitized).forEach(([videoId, entry]) => {
+        acc[videoId] = mergeContinueWatchingEntry(acc[videoId], entry);
+      });
+      return acc;
+    }, {});
+  }
+
   function getInitialContinueWatching() {
-    const parsed = readJsonStorage('yt_explorer_continue', {});
-    return sanitizeContinueWatchingSnapshot(parsed);
+    const primary = readJsonStorage(CONTINUE_WATCHING_STORAGE_KEY, {});
+    const shadow = readJsonStorage(CONTINUE_WATCHING_SHADOW_KEY, {});
+    return mergeContinueWatchingSnapshots(primary, shadow);
+  }
+
+  function writeContinueWatchingSnapshot(snapshot) {
+    const mergedContinueWatching = mergeContinueWatchingSnapshots(snapshot);
+    localStorage.setItem(CONTINUE_WATCHING_STORAGE_KEY, JSON.stringify(mergedContinueWatching));
+    localStorage.setItem(CONTINUE_WATCHING_SHADOW_KEY, JSON.stringify(mergedContinueWatching));
+    return mergedContinueWatching;
   }
 
   function getInitialWatchLaterVideoIds() {
@@ -1294,7 +1366,7 @@
   }
 
   function persistContinueWatching() {
-    localStorage.setItem('yt_explorer_continue', JSON.stringify(state.continueWatching));
+    state.continueWatching = writeContinueWatchingSnapshot(state.continueWatching);
     scheduleCentralCacheSync();
   }
 
@@ -1506,7 +1578,7 @@
     }
 
     if (Object.keys(continueWatching).length > 0) {
-      state.continueWatching = continueWatching;
+      state.continueWatching = mergeContinueWatchingSnapshots(state.continueWatching, continueWatching);
       persistContinueWatching();
       changed = true;
     }
@@ -1712,6 +1784,7 @@
 
   function refreshPlaybackStateFromStorage() {
     state.continueWatching = getInitialContinueWatching();
+    writeContinueWatchingSnapshot(state.continueWatching);
     state.watchedVideos = new Set(getInitialWatchedVideos());
     state.watchLaterVideoIds = new Set(getInitialWatchLaterVideoIds());
     ensureStateCollectionsHealthy();
