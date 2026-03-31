@@ -316,6 +316,11 @@
       : [];
   }
 
+  function getInitialWatchLaterFallbackPlaylistId() {
+    const parsed = localStorage.getItem('yt_explorer_watch_later_fallback_id') || '';
+    return typeof parsed === 'string' ? parsed.trim() : '';
+  }
+
   function sanitizeContinueWatchingSnapshot(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
@@ -702,6 +707,7 @@
     playlistVideoCache: getInitialPlaylistVideoCache(),
     pinnedPlaylists: getInitialPinnedPlaylists(),
     watchLaterPlaylistId: localStorage.getItem('yt_explorer_watch_later_id') || '',
+    watchLaterFallbackPlaylistId: getInitialWatchLaterFallbackPlaylistId(),
     watchLaterVideoIds: new Set(getInitialWatchLaterVideoIds()),
 
     // Tracked channels feed
@@ -1399,6 +1405,15 @@
     scheduleCentralCacheSync();
   }
 
+  function persistWatchLaterFallbackPlaylistId() {
+    if (state.watchLaterFallbackPlaylistId) {
+      localStorage.setItem('yt_explorer_watch_later_fallback_id', state.watchLaterFallbackPlaylistId);
+    } else {
+      localStorage.removeItem('yt_explorer_watch_later_fallback_id');
+    }
+    scheduleCentralCacheSync();
+  }
+
   function persistWatchLaterVideoIds() {
     localStorage.setItem('yt_explorer_watch_later_videos', JSON.stringify([...state.watchLaterVideoIds]));
   }
@@ -1533,6 +1548,7 @@
       pinnedPlaylists: state.pinnedPlaylists,
       continueWatching: state.continueWatching,
       watchLaterPlaylistId: state.watchLaterPlaylistId || '',
+      watchLaterFallbackPlaylistId: state.watchLaterFallbackPlaylistId || '',
       updatedAt: new Date().toISOString(),
     };
   }
@@ -1586,6 +1602,12 @@
     if (typeof snapshot.watchLaterPlaylistId === 'string' && snapshot.watchLaterPlaylistId) {
       state.watchLaterPlaylistId = snapshot.watchLaterPlaylistId;
       persistWatchLaterPlaylistId();
+      changed = true;
+    }
+
+    if (typeof snapshot.watchLaterFallbackPlaylistId === 'string' && snapshot.watchLaterFallbackPlaylistId) {
+      state.watchLaterFallbackPlaylistId = snapshot.watchLaterFallbackPlaylistId;
+      persistWatchLaterFallbackPlaylistId();
       changed = true;
     }
 
@@ -2966,6 +2988,94 @@
     }
   }
 
+  function getWatchLaterFallbackMetadata() {
+    return {
+      title: 'Watch Later (Explorer)',
+      description: 'Private fallback playlist created by YouTube Playlist Explorer when the special Watch Later list is blocked by the YouTube API.',
+    };
+  }
+
+  function findWatchLaterFallbackPlaylist() {
+    const { title } = getWatchLaterFallbackMetadata();
+    return state.playlists.find((playlist) => {
+      if (!playlist?.id) return false;
+      if (state.watchLaterFallbackPlaylistId && playlist.id === state.watchLaterFallbackPlaylistId) {
+        return true;
+      }
+      return (playlist.snippet?.title || '').trim().toLowerCase() === title.toLowerCase();
+    }) || null;
+  }
+
+  async function ensureWatchLaterTargetPlaylist({ allowCreate = true } = {}) {
+    if (state.watchLaterPlaylistId) {
+      return state.watchLaterPlaylistId;
+    }
+
+    if (state.watchLaterFallbackPlaylistId) {
+      return state.watchLaterFallbackPlaylistId;
+    }
+
+    await fetchSpecialPlaylists();
+    if (state.watchLaterPlaylistId) {
+      return state.watchLaterPlaylistId;
+    }
+
+    const existingFallback = findWatchLaterFallbackPlaylist();
+    if (existingFallback?.id) {
+      state.watchLaterFallbackPlaylistId = existingFallback.id;
+      persistWatchLaterFallbackPlaylistId();
+      return existingFallback.id;
+    }
+
+    if (!allowCreate) {
+      return '';
+    }
+
+    const fallbackMeta = getWatchLaterFallbackMetadata();
+    const created = await apiFetch('https://www.googleapis.com/youtube/v3/playlists?part=snippet,status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        snippet: {
+          title: fallbackMeta.title,
+          description: fallbackMeta.description,
+        },
+        status: {
+          privacyStatus: 'private',
+        },
+      }),
+    });
+
+    const createdPlaylist = created?.items?.[0] || created;
+    if (!createdPlaylist?.id) {
+      throw new Error('Unable to create Watch Later fallback playlist.');
+    }
+
+    state.watchLaterFallbackPlaylistId = createdPlaylist.id;
+    persistWatchLaterFallbackPlaylistId();
+    if (!state.playlists.some((playlist) => playlist.id === createdPlaylist.id)) {
+      state.playlists = [...state.playlists, createdPlaylist];
+      persistPlaylistCache();
+      renderPlaylists();
+    }
+    showToast('Special Watch Later is blocked, so a private fallback playlist was created for this account.');
+    return createdPlaylist.id;
+  }
+
+  function isWatchLaterBlockedError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes('watchlater')
+      || message.includes('watch later')
+      || message.includes('playlistitemsnotaccessible')
+      || message.includes('playlistnotfound')
+      || message.includes('playlistoperationunsupported')
+      || message.includes('forbidden')
+      || message.includes('insufficientpermissions')
+      || message.includes('operationunsupported');
+  }
+
   async function loadPrimaryLibraryData() {
     markYouTubeQuotaExceeded(false);
     await Promise.all([fetchUserInfo(), fetchPlaylists()]);
@@ -3842,7 +3952,12 @@
     continueItem.addEventListener('click', () => selectPlaylist('CONTINUE_WATCHING', continueItem));
     dom.sidebarList.appendChild(continueItem);
 
-    if (watchLaterCount > 0 || state.watchLaterPlaylistId || state.accessToken) {
+    if (watchLaterCount > 0 || state.watchLaterPlaylistId || state.watchLaterFallbackPlaylistId || state.accessToken) {
+      const watchLaterSubtitle = watchLaterCount > 0
+        ? `${watchLaterCount} saved videos`
+        : state.watchLaterFallbackPlaylistId
+          ? 'Private Watch Later fallback playlist'
+          : 'Your YouTube Watch Later playlist';
       const watchLaterItem = document.createElement('div');
       watchLaterItem.className = 'playlist-item' + (state.activePlaylistId === 'WL' ? ' active' : '');
       watchLaterItem.innerHTML = `
@@ -3851,7 +3966,7 @@
         </div>
         <div class="playlist-meta">
           <div class="playlist-title">Watch Later</div>
-          <div class="playlist-video-count">${watchLaterCount > 0 ? `${watchLaterCount} saved videos` : 'Your YouTube Watch Later playlist'}</div>
+          <div class="playlist-video-count">${watchLaterSubtitle}</div>
         </div>
       `;
       watchLaterItem.addEventListener('click', () => selectPlaylist('WL', watchLaterItem));
@@ -4516,27 +4631,56 @@
     try {
       let resolvedPlaylistId = playlistId;
       if (playlistId === 'WL') {
-        if (!state.watchLaterPlaylistId) {
-          await fetchSpecialPlaylists();
+        resolvedPlaylistId = await ensureWatchLaterTargetPlaylist();
+        if (!resolvedPlaylistId) {
+          throw new Error('Watch Later is unavailable for this account right now.');
         }
-        resolvedPlaylistId = state.watchLaterPlaylistId || playlistId;
       }
 
-      await apiFetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          snippet: {
-            playlistId: resolvedPlaylistId,
-            resourceId: {
-              kind: 'youtube#video',
-              videoId,
-            },
+      try {
+        await apiFetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
           },
-        }),
-      });
+          body: JSON.stringify({
+            snippet: {
+              playlistId: resolvedPlaylistId,
+              resourceId: {
+                kind: 'youtube#video',
+                videoId,
+              },
+            },
+          }),
+        });
+      } catch (error) {
+        if (playlistId !== 'WL' || !isWatchLaterBlockedError(error)) {
+          throw error;
+        }
+
+        state.watchLaterPlaylistId = '';
+        persistWatchLaterPlaylistId();
+        resolvedPlaylistId = await ensureWatchLaterTargetPlaylist({ allowCreate: true });
+        if (!resolvedPlaylistId) {
+          throw error;
+        }
+
+        await apiFetch('https://www.googleapis.com/youtube/v3/playlistItems?part=snippet', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            snippet: {
+              playlistId: resolvedPlaylistId,
+              resourceId: {
+                kind: 'youtube#video',
+                videoId,
+              },
+            },
+          }),
+        });
+      }
       
       if (playlistId === 'WL') {
         addVideoToWatchLaterMirror(videoId);
