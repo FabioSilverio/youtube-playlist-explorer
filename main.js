@@ -1777,6 +1777,7 @@
 
   function openWatchPage(video) {
     if (!video?.id) return;
+    saveContinueProgress(video, Math.max(1, Number(getResumeEntry(video.id)?.progressSeconds || 1)));
     persistSelectedVideo(video);
     window.location.href = `watch.html?v=${encodeURIComponent(video.id)}`;
   }

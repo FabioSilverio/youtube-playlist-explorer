@@ -440,6 +440,8 @@
             persistSelectedVideo(state.video);
           }
 
+          saveContinueProgress(Math.max(1, resumeSeconds || 1));
+
           if (resumeSeconds > 5) {
             event.target.seekTo(resumeSeconds, true);
           }
