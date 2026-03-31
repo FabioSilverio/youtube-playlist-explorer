@@ -104,12 +104,20 @@ function sanitizeContinueWatching(value) {
       .map(([key, entry]) => [
         key,
         {
-          progress: Number(entry.progress || 0),
+          id: typeof entry.id === 'string' && entry.id.trim() ? entry.id : key,
+          progressSeconds: Number((entry.progressSeconds ?? entry.progress) || 0),
           duration: Number(entry.duration || 0),
+          durationFormatted: typeof entry.durationFormatted === 'string' ? entry.durationFormatted : '',
+          lastPlayedAt: Number(entry.lastPlayedAt || (entry.updatedAt ? Date.parse(entry.updatedAt) || 0 : 0)),
           updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
           title: typeof entry.title === 'string' ? entry.title : '',
           channel: typeof entry.channel === 'string' ? entry.channel : '',
           thumbnail: typeof entry.thumbnail === 'string' ? entry.thumbnail : '',
+          addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : '',
+          category: typeof entry.category === 'string' ? entry.category : 'Other',
+          isPodcast: Boolean(entry.isPodcast),
+          description: typeof entry.description === 'string' ? entry.description : '',
+          tags: Array.isArray(entry.tags) ? entry.tags.filter((tag) => typeof tag === 'string').slice(0, 30) : [],
         },
       ])
   );

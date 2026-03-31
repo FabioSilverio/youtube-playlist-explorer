@@ -254,9 +254,22 @@
           key,
           {
             ...entry,
-            progress: Number(entry.progress || 0),
+            id: typeof entry.id === 'string' && entry.id.trim() ? entry.id : key,
+            title: typeof entry.title === 'string' ? entry.title : '',
+            channel: typeof entry.channel === 'string' ? entry.channel : '',
+            thumbnail: typeof entry.thumbnail === 'string' ? entry.thumbnail : '',
+            addedAt: typeof entry.addedAt === 'string' ? entry.addedAt : '',
             duration: Number(entry.duration || 0),
-            updatedAt: entry.updatedAt || '',
+            durationFormatted: typeof entry.durationFormatted === 'string'
+              ? entry.durationFormatted
+              : formatDuration(Number(entry.duration || 0)),
+            category: typeof entry.category === 'string' ? entry.category : 'Other',
+            isPodcast: Boolean(entry.isPodcast),
+            description: typeof entry.description === 'string' ? entry.description : '',
+            tags: Array.isArray(entry.tags) ? entry.tags.filter((tag) => typeof tag === 'string').slice(0, 30) : [],
+            progressSeconds: Number((entry.progressSeconds ?? entry.progress) || 0),
+            lastPlayedAt: Number(entry.lastPlayedAt || (entry.updatedAt ? Date.parse(entry.updatedAt) || 0 : 0)),
+            updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : '',
           },
         ])
     );
