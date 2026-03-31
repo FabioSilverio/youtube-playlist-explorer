@@ -293,10 +293,14 @@
     if (!state.video?.id) return;
 
     const duration = state.video.duration || 0;
-    const seconds = Math.max(0, Math.floor(progressSeconds || 0));
     const continueWatching = readJson(STORAGE_KEYS.continueWatching, {});
     const existing = continueWatching[state.video.id];
     const watchedVideos = getWatchedSet();
+    const reportedSeconds = Math.max(0, Math.floor(progressSeconds || 0));
+    const previousSeconds = Number(existing?.progressSeconds || 0);
+    const seconds = reportedSeconds <= 1 && previousSeconds > reportedSeconds
+      ? previousSeconds
+      : reportedSeconds;
 
     if (duration && seconds >= Math.max(duration - 15, duration * 0.95)) {
       delete continueWatching[state.video.id];

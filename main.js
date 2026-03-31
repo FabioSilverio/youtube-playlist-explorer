@@ -1085,8 +1085,12 @@
     if (!video || !video.id) return;
 
     const duration = video.duration || 0;
-    const seconds = Math.max(0, Math.floor(progressSeconds || 0));
     const existing = state.continueWatching[video.id];
+    const reportedSeconds = Math.max(0, Math.floor(progressSeconds || 0));
+    const previousSeconds = Number(existing?.progressSeconds || 0);
+    const seconds = reportedSeconds <= 1 && previousSeconds > reportedSeconds
+      ? previousSeconds
+      : reportedSeconds;
 
     if (duration && seconds >= Math.max(duration - 15, duration * 0.95)) {
       delete state.continueWatching[video.id];
