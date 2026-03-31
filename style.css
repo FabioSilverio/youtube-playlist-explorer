@@ -990,6 +990,29 @@ body {
   gap: 28px 18px;
 }
 
+.video-day-section {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.video-day-section-label {
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.video-day-section-rule {
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, rgba(255,71,87,0.35), rgba(255,255,255,0.04));
+}
+
 .video-card {
   background: transparent;
   border: none;
@@ -1204,6 +1227,13 @@ body {
   border-color: rgba(255,255,255,0.16);
 }
 
+.video-inline-action.is-saved,
+.video-inline-action.is-saved:hover {
+  color: #d4ffe3;
+  background: rgba(46, 204, 113, 0.16);
+  border-color: rgba(46, 204, 113, 0.32);
+}
+
 .btn-tag-video {
   position: absolute;
   top: 8px; left: 8px;
@@ -1402,6 +1432,63 @@ body {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 14px;
+}
+
+.channel-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.channel-search-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.03);
+}
+
+.channel-search-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255,255,255,0.06);
+}
+
+.channel-search-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.channel-search-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.channel-search-handle {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.channel-search-add {
+  border: none;
+  border-radius: var(--radius-full);
+  background: rgba(88,141,239,0.16);
+  color: var(--blue);
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.channel-search-add:hover {
+  background: rgba(88,141,239,0.24);
 }
 .tracked-channel-list {
   display: flex;

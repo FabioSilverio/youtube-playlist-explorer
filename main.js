@@ -237,6 +237,13 @@
     return sanitizeContinueWatchingSnapshot(parsed);
   }
 
+  function getInitialWatchLaterVideoIds() {
+    const parsed = readJsonStorage('yt_explorer_watch_later_videos', []);
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter((value) => typeof value === 'string' && value.trim()))]
+      : [];
+  }
+
   function sanitizeContinueWatchingSnapshot(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
 
@@ -610,6 +617,7 @@
     playlistVideoCache: getInitialPlaylistVideoCache(),
     pinnedPlaylists: getInitialPinnedPlaylists(),
     watchLaterPlaylistId: localStorage.getItem('yt_explorer_watch_later_id') || '',
+    watchLaterVideoIds: new Set(getInitialWatchLaterVideoIds()),
 
     // Tracked channels feed
     trackedChannels: getInitialTrackedChannels(),
@@ -736,17 +744,21 @@
     trackedModal: $('#tracked-modal'),
     btnCloseTrackedModal: $('#btn-close-tracked-modal'),
     trackedInput: $('#tracked-input'),
+    btnSearchTracked: $('#btn-search-tracked'),
     btnAddTracked: $('#btn-add-tracked'),
     btnResetTracked: $('#btn-reset-tracked'),
     trackedChannelList: $('#tracked-channel-list'),
+    trackedSearchResults: $('#tracked-search-results'),
 
     newsModal: $('#news-modal'),
     btnCloseNewsModal: $('#btn-close-news-modal'),
     newsInput: $('#news-input'),
     newsGroupSelect: $('#news-group-select'),
+    btnSearchNews: $('#btn-search-news'),
     btnAddNews: $('#btn-add-news'),
     btnResetNews: $('#btn-reset-news'),
     newsChannelList: $('#news-channel-list'),
+    newsSearchResults: $('#news-search-results'),
 
     tagModal: $('#tag-modal'),
     btnCloseTagModal: $('#btn-close-tag-modal'),
@@ -822,6 +834,38 @@
     if (d < 30) return `${Math.floor(d / 7)} week${Math.floor(d / 7) > 1 ? 's' : ''} ago`;
     if (d < 365) return `${Math.floor(d / 30)} month${Math.floor(d / 30) > 1 ? 's' : ''} ago`;
     return `${Math.floor(d / 365)} year${Math.floor(d / 365) > 1 ? 's' : ''} ago`;
+  }
+
+  function shouldGroupVideosByDay() {
+    return ['TRACKED_FEED', 'NEWS_FEED', 'NEWS_LIVE', 'CONTINUE_WATCHING'].includes(state.activePlaylistId);
+  }
+
+  function getVideoDaySectionLabel(value) {
+    const publishedAtMs = getPublishedAtMs(value);
+    if (!publishedAtMs) return 'Unknown date';
+    const todayStart = getStartOfTodayMs();
+    const yesterdayStart = todayStart - (24 * 60 * 60 * 1000);
+    if (publishedAtMs >= todayStart) return 'Today';
+    if (publishedAtMs >= yesterdayStart) return 'Yesterday';
+    return new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'short',
+    }).format(new Date(publishedAtMs));
+  }
+
+  function isVideoInWatchLater(videoId = '') {
+    return Boolean(videoId) && state.watchLaterVideoIds.has(videoId);
+  }
+
+  function setWatchLaterButtonState(button, isSaved) {
+    if (!button) return;
+    button.disabled = Boolean(isSaved);
+    button.classList.toggle('is-saved', Boolean(isSaved));
+    button.title = isSaved ? 'Already in your YouTube Watch Later' : 'Save to your YouTube Watch Later';
+    button.innerHTML = isSaved
+      ? '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> In Watch Later'
+      : '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg> Watch later';
   }
 
   function isPodcast(title, channel, duration) {
@@ -1125,6 +1169,10 @@
       localStorage.removeItem('yt_explorer_watch_later_id');
     }
     scheduleCentralCacheSync();
+  }
+
+  function persistWatchLaterVideoIds() {
+    localStorage.setItem('yt_explorer_watch_later_videos', JSON.stringify([...state.watchLaterVideoIds]));
   }
 
   function persistSelectedVideo(video) {
@@ -1843,11 +1891,13 @@
   function openTrackedModal() {
     renderTrackedChannelsList();
     dom.trackedInput.value = '';
+    clearTrackedSearchResults();
     show(dom.trackedModal);
     setTimeout(() => dom.trackedInput.focus(), 100);
   }
 
   function closeTrackedModal() {
+    clearTrackedSearchResults();
     hide(dom.trackedModal);
   }
 
@@ -1908,11 +1958,13 @@
     renderNewsChannelsList();
     dom.newsInput.value = '';
     dom.newsGroupSelect.value = 'US News';
+    clearNewsSearchResults();
     show(dom.newsModal);
     setTimeout(() => dom.newsInput.focus(), 100);
   }
 
   function closeNewsModal() {
+    clearNewsSearchResults();
     hide(dom.newsModal);
   }
 
@@ -2018,6 +2070,156 @@
     };
   }
 
+  function clearTrackedSearchResults() {
+    if (!dom.trackedSearchResults) return;
+    dom.trackedSearchResults.innerHTML = '';
+    hide(dom.trackedSearchResults);
+  }
+
+  function clearNewsSearchResults() {
+    if (!dom.newsSearchResults) return;
+    dom.newsSearchResults.innerHTML = '';
+    hide(dom.newsSearchResults);
+  }
+
+  async function searchYouTubeChannels(query) {
+    const trimmed = String(query || '').trim();
+    if (!trimmed) return [];
+
+    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=8&q=${encodeURIComponent(trimmed)}`;
+    const searchData = await apiFetch(searchUrl);
+    const channelIds = (searchData.items || [])
+      .map((item) => item.id?.channelId)
+      .filter(Boolean);
+
+    if (channelIds.length === 0) return [];
+
+    const details = await apiFetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelIds.join(',')}`);
+    const detailMap = Object.fromEntries((details.items || []).map((item) => [item.id, item]));
+
+    return channelIds.map((channelId) => {
+      const item = detailMap[channelId];
+      if (!item) return null;
+      const handle = item.snippet?.customUrl ? `@${item.snippet.customUrl.replace(/^@/, '')}` : channelId;
+      return {
+        id: channelId,
+        title: item.snippet?.title || handle,
+        handle,
+        thumbnail: item.snippet?.thumbnails?.default?.url || '',
+      };
+    }).filter(Boolean);
+  }
+
+  function renderTrackedSearchResults(results = []) {
+    if (!dom.trackedSearchResults) return;
+    dom.trackedSearchResults.innerHTML = '';
+    if (!results.length) {
+      hide(dom.trackedSearchResults);
+      return;
+    }
+
+    results.forEach((channel) => {
+      const row = document.createElement('div');
+      row.className = 'channel-search-item';
+      row.innerHTML = `
+        <img class="channel-search-thumb" src="${escHtml(channel.thumbnail)}" alt="" />
+        <div class="channel-search-meta">
+          <div class="channel-search-title">${escHtml(channel.title)}</div>
+          <div class="channel-search-handle">${escHtml(channel.handle || channel.id)}</div>
+        </div>
+        <button class="channel-search-add" type="button">Add</button>
+      `;
+      row.querySelector('.channel-search-add').addEventListener('click', () => {
+        dom.trackedInput.value = channel.id;
+        addTrackedChannel();
+      });
+      dom.trackedSearchResults.appendChild(row);
+    });
+
+    show(dom.trackedSearchResults);
+  }
+
+  function renderNewsSearchResults(results = []) {
+    if (!dom.newsSearchResults) return;
+    dom.newsSearchResults.innerHTML = '';
+    if (!results.length) {
+      hide(dom.newsSearchResults);
+      return;
+    }
+
+    results.forEach((channel) => {
+      const row = document.createElement('div');
+      row.className = 'channel-search-item';
+      row.innerHTML = `
+        <img class="channel-search-thumb" src="${escHtml(channel.thumbnail)}" alt="" />
+        <div class="channel-search-meta">
+          <div class="channel-search-title">${escHtml(channel.title)}</div>
+          <div class="channel-search-handle">${escHtml(channel.handle || channel.id)}</div>
+        </div>
+        <button class="channel-search-add" type="button">Add</button>
+      `;
+      row.querySelector('.channel-search-add').addEventListener('click', () => {
+        dom.newsInput.value = channel.id;
+        addNewsChannel();
+      });
+      dom.newsSearchResults.appendChild(row);
+    });
+
+    show(dom.newsSearchResults);
+  }
+
+  async function searchTrackedChannels() {
+    const raw = dom.trackedInput.value.trim();
+    if (!raw) {
+      clearTrackedSearchResults();
+      return;
+    }
+
+    const originalLabel = dom.btnSearchTracked.textContent;
+    dom.btnSearchTracked.disabled = true;
+    dom.btnSearchTracked.textContent = 'Searching...';
+
+    try {
+      const results = await searchYouTubeChannels(raw);
+      renderTrackedSearchResults(results);
+      if (results.length === 0) {
+        showToast('No channels found for that search.', 'error');
+      }
+    } catch (error) {
+      console.error('Tracked channel search failed:', error);
+      showToast(error.message || 'Failed to search channels.', 'error');
+    } finally {
+      dom.btnSearchTracked.disabled = false;
+      dom.btnSearchTracked.textContent = originalLabel;
+    }
+  }
+
+  async function searchNewsChannels() {
+    const raw = dom.newsInput.value.trim();
+    if (!raw) {
+      clearNewsSearchResults();
+      return;
+    }
+
+    const originalLabel = dom.btnSearchNews.textContent;
+    dom.btnSearchNews.disabled = true;
+    dom.btnSearchNews.textContent = 'Searching...';
+
+    try {
+      const results = await searchYouTubeChannels(raw);
+      renderNewsSearchResults(results);
+      if (results.length === 0) {
+        showToast('No channels found for that search.', 'error');
+      }
+    } catch (error) {
+      console.error('News channel search failed:', error);
+      showToast(error.message || 'Failed to search channels.', 'error');
+    } finally {
+      dom.btnSearchNews.disabled = false;
+      dom.btnSearchNews.textContent = originalLabel;
+    }
+  }
+
   async function addTrackedChannel() {
     const raw = dom.trackedInput.value.trim();
     if (!raw) return;
@@ -2039,6 +2241,7 @@
       renderTrackedChannelsList();
       renderPlaylists();
       dom.trackedInput.value = '';
+       clearTrackedSearchResults();
       showToast(`Added ${channel.title} to tracked feed.`);
 
       fetchTrackedFeed({ background: state.activePlaylistId !== 'TRACKED_FEED' });
@@ -2076,6 +2279,7 @@
       renderNewsChannelsList();
       renderPlaylists();
       dom.newsInput.value = '';
+      clearNewsSearchResults();
       showToast(`Added ${channel.title} to the news feed.`);
 
       fetchNewsFeed({ background: state.activePlaylistId !== 'NEWS_FEED', force: true });
@@ -3207,6 +3411,7 @@
     dom.playlistCount.textContent = String(state.playlists.length);
     dom.sidebarList.innerHTML = '';
     const continueWatchingVideos = getContinueWatchingVideos();
+    const watchLaterCount = state.playlistVideoCache.WL?.videos?.length || 0;
     const trackedGroups = getTrackedGroups();
     const newsGroups = getNewsGroups();
     const totalTrackedNew = state.trackedNewCounts.All || 0;
@@ -3381,6 +3586,22 @@
         });
         dom.sidebarList.appendChild(groupItem);
       });
+
+    if (state.watchLaterPlaylistId || state.accessToken) {
+      const watchLaterItem = document.createElement('div');
+      watchLaterItem.className = 'playlist-item' + (state.activePlaylistId === 'WL' ? ' active' : '');
+      watchLaterItem.innerHTML = `
+        <div class="playlist-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--bg-card);">
+          <svg width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+        </div>
+        <div class="playlist-meta">
+          <div class="playlist-title">Watch Later</div>
+          <div class="playlist-video-count">${watchLaterCount > 0 ? `${watchLaterCount} saved videos` : 'Your YouTube Watch Later playlist'}</div>
+        </div>
+      `;
+      watchLaterItem.addEventListener('click', () => selectPlaylist('WL', watchLaterItem));
+      dom.sidebarList.appendChild(watchLaterItem);
+    }
 
     const continueItem = document.createElement('div');
     continueItem.className = 'playlist-item' + (state.activePlaylistId === 'CONTINUE_WATCHING' ? ' active' : '');
@@ -3779,7 +4000,18 @@
     }
 
     try {
-      let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${state.activePlaylistId}&maxResults=${CONFIG.MAX_RESULTS}`;
+      let playlistLookupId = state.activePlaylistId;
+      if (playlistLookupId === 'WL') {
+        if (!state.watchLaterPlaylistId) {
+          await fetchSpecialPlaylists();
+        }
+        playlistLookupId = state.watchLaterPlaylistId || '';
+        if (!playlistLookupId) {
+          throw new Error('Watch Later playlist is not available in this session yet.');
+        }
+      }
+
+      let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${playlistLookupId}&maxResults=${CONFIG.MAX_RESULTS}`;
       if (pageToken) url += `&pageToken=${pageToken}`;
 
       const data = await apiFetch(url);
@@ -3858,6 +4090,12 @@
         nextPageToken: state.nextPageToken,
         videos: state.allVideos,
       };
+      if (state.activePlaylistId === 'WL') {
+        state.allVideos.forEach((video) => {
+          if (video?.id) state.watchLaterVideoIds.add(video.id);
+        });
+        persistWatchLaterVideoIds();
+      }
       persistPlaylistVideoCache();
       renderCategoryChips();
       applyFilters();
@@ -4052,9 +4290,18 @@
         }),
       });
       
+      if (playlistId === 'WL') {
+        state.watchLaterVideoIds.add(videoId);
+        persistWatchLaterVideoIds();
+      }
+
       showToast(playlistId === 'WL' ? 'Saved to Watch Later!' : 'Added to playlist successfully!');
-      btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Saved';
-      btnEl.style.background = 'var(--green)';
+      if (playlistId === 'WL') {
+        setWatchLaterButtonState(btnEl, true);
+      } else {
+        btnEl.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg> Saved';
+        btnEl.style.background = 'var(--green)';
+      }
 
       // Process tags if provided
       const tags = parseTags(tagsStr);
@@ -4315,8 +4562,10 @@
   function renderVideos() {
     dom.videoGrid.classList.toggle('is-news-trending', state.activePlaylistId === 'NEWS_FEED' && state.activeNewsGroup === 'Trending');
     dom.videoGrid.innerHTML = '';
+    let lastDaySection = '';
     state.filteredVideos.forEach((v, i) => {
       const isWatched = state.watchedVideos.has(v.id);
+      const isSavedToWatchLater = isVideoInWatchLater(v.id);
       const customTags = state.videoTags[v.id] || [];
       const hasTags = customTags.length > 0;
       const channelInitial = escHtml(((v.channel || v.title || '?').trim().charAt(0) || '?').toUpperCase());
@@ -4357,7 +4606,21 @@
       const resumeHtml = resumeEntry
         ? `<div class="video-resume-note">${escHtml(formatResumeLabel(resumeEntry.progressSeconds, v.duration))}</div>`
         : '';
-        
+
+      if (shouldGroupVideosByDay()) {
+        const daySectionLabel = getVideoDaySectionLabel(v.addedAt);
+        if (daySectionLabel !== lastDaySection) {
+          const section = document.createElement('div');
+          section.className = 'video-day-section';
+          section.innerHTML = `
+            <div class="video-day-section-label">${escHtml(daySectionLabel)}</div>
+            <div class="video-day-section-rule"></div>
+          `;
+          dom.videoGrid.appendChild(section);
+          lastDaySection = daySectionLabel;
+        }
+      }
+         
       const card = document.createElement('div');
       card.className = 'video-card' + (isWatched ? ' watched' : '');
       card.style.animationDelay = `${Math.min(i, 8) * 0.05}s`;
@@ -4407,10 +4670,7 @@
             </div>
           </div>
           <div class="video-actions-row">
-            <button class="video-inline-action btn-watch-later" type="button" title="Save to your YouTube Watch Later">
-              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/></svg>
-              Watch later
-            </button>
+            <button class="video-inline-action btn-watch-later ${isSavedToWatchLater ? 'is-saved' : ''}" type="button" title="${isSavedToWatchLater ? 'Already in your YouTube Watch Later' : 'Save to your YouTube Watch Later'}"></button>
             <button class="video-inline-action btn-add-playlist-inline" type="button" title="Choose one of your YouTube playlists">
               <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
               Save
@@ -4451,8 +4711,10 @@
 
       const watchLaterBtn = card.querySelector('.btn-watch-later');
       if (watchLaterBtn) {
+        setWatchLaterButtonState(watchLaterBtn, isSavedToWatchLater);
         watchLaterBtn.addEventListener('click', (e) => {
           e.stopPropagation();
+          if (isVideoInWatchLater(v.id)) return;
           addToPlaylist(v.id, 'WL', watchLaterBtn);
         });
       }
@@ -4833,6 +5095,7 @@
       if (e.target === dom.trackedModal) closeTrackedModal();
     });
     dom.btnAddTracked.addEventListener('click', addTrackedChannel);
+    dom.btnSearchTracked.addEventListener('click', searchTrackedChannels);
     dom.trackedInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addTrackedChannel();
     });
@@ -4843,6 +5106,7 @@
       if (e.target === dom.newsModal) closeNewsModal();
     });
     dom.btnAddNews.addEventListener('click', addNewsChannel);
+    dom.btnSearchNews.addEventListener('click', searchNewsChannels);
     dom.newsInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addNewsChannel();
     });

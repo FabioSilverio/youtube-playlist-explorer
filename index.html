@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>YouTube Playlist Explorer</title>
   <meta name="description" content="Browse, search, and filter your YouTube playlists with powerful tools." />
-  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2.3.2" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=2.3.3" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=2.3.2" />
+  <link rel="stylesheet" href="style.css?v=2.3.3" />
 </head>
 <body>
 
@@ -347,8 +347,10 @@
         </p>
         <div class="tracked-input-row">
           <input type="text" id="tracked-input" class="search-input" placeholder="e.g. @HasanAbi or https://youtube.com/@destiny" autocomplete="off" />
+          <button id="btn-search-tracked" class="btn-text-sm" type="button">Search</button>
           <button id="btn-add-tracked" class="btn-small">Add</button>
         </div>
+        <div id="tracked-search-results" class="channel-search-results hidden"></div>
         <div class="tracked-modal-actions">
           <button id="btn-reset-tracked" class="btn-text-sm" type="button">Reset defaults</button>
         </div>
@@ -376,8 +378,10 @@
             <option value="World News">World News</option>
             <option value="Custom">Custom</option>
           </select>
+          <button id="btn-search-news" class="btn-text-sm" type="button">Search</button>
           <button id="btn-add-news" class="btn-small">Add</button>
         </div>
+        <div id="news-search-results" class="channel-search-results hidden"></div>
         <div class="tracked-modal-actions">
           <button id="btn-reset-news" class="btn-text-sm" type="button">Reset defaults</button>
         </div>
@@ -389,7 +393,7 @@
   <!-- Scripts -->
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="https://apis.google.com/js/api.js" async defer></script>
-  <script src="config.js?v=2.3.2"></script>
-  <script src="main.js?v=2.3.2"></script>
+  <script src="config.js?v=2.3.3"></script>
+  <script src="main.js?v=2.3.3"></script>
 </body>
 </html>
